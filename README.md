@@ -2,6 +2,16 @@
 
 **QuickFolder** là ứng dụng tiện ích siêu nhẹ cho macOS (lấy cảm hứng từ [Default Folder X](https://www.stclairsoft.com/DefaultFolderX/)), tập trung vào việc **chọn nhanh thư mục đích khi Lưu (Save) hoặc Mở (Open) file** từ bất kỳ ứng dụng nào (Microsoft Word, Excel, Chrome, Preview, VS Code...).
 
+<p align="center">
+  <img src="docs/images/hero-save-panel.png" alt="QuickFolder tự động bám sát hộp thoại Save/Open trên macOS" width="960" />
+</p>
+
+## 📸 Giao diện Cài đặt & Quản lý Thư mục
+
+<p align="center">
+  <img src="docs/images/settings-dashboard.png" alt="Bảng điều khiển Cài đặt & Thử nghiệm QuickFolder" width="760" />
+</p>
+
 ## ✨ Tính năng nổi bật
 
 - **Thanh bên nổi tự động (Auto-Docking Sidebar)**: Tự động xuất hiện bám sát cạnh phải hoặc cạnh trái của hộp thoại `Save` / `Open` ngay khi ứng dụng bất kỳ mở hộp thoại lưu/mở file (kể cả trên thiết lập đa màn hình).
