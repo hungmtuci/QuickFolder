@@ -6,6 +6,7 @@ struct FloatingPanelView: View {
     @ObservedObject var detector: SavePanelDetector
     @ObservedObject var navigator: FolderNavigator
     @ObservedObject var panelController: FloatingPanelController
+    @ObservedObject var hotKeyManager: HotKeyManager
 
     var onCloseRequested: (() -> Void)?
 
@@ -18,6 +19,7 @@ struct FloatingPanelView: View {
         self.detector = SavePanelDetector.shared
         self.navigator = FolderNavigator.shared
         self.panelController = panelController
+        self.hotKeyManager = HotKeyManager.shared
         self.onCloseRequested = onCloseRequested
     }
 
@@ -61,6 +63,12 @@ struct FloatingPanelView: View {
                         .opacity(0.5)
 
                     searchBarSection
+
+                    if let activeApp = detector.activePanel,
+                       let appDefault = folderManager.defaultFolderItem(for: activeApp.appIdentifierKey),
+                       panelController.searchText.isEmpty {
+                        perAppDefaultBanner(folder: appDefault, appName: activeApp.appName)
+                    }
 
                     if let firstOpen = folderManager.openFinderFolders.first,
                        panelController.searchText.isEmpty {
@@ -257,6 +265,19 @@ struct FloatingPanelView: View {
             .buttonStyle(.plain)
             .help("Làm mới danh sách cửa sổ Finder")
 
+            if let panel = detector.activePanel,
+               panel.appPID != ProcessInfo.processInfo.processIdentifier {
+                Button {
+                    detector.toggleExcludedApp(panel.appIdentifierKey)
+                } label: {
+                    Image(systemName: "eye.slash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Không tự hiện bảng nổi trên \(panel.appName)")
+            }
+
             if let onCloseRequested {
                 Button {
                     onCloseRequested()
@@ -266,7 +287,7 @@ struct FloatingPanelView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Ẩn bảng chọn (⌘⇧D)")
+                .help("Ẩn bảng chọn (\(hotKeyManager.togglePreset.compactLabel))")
             }
         }
         .padding(.horizontal, 12)
@@ -306,6 +327,56 @@ struct FloatingPanelView: View {
         .padding(.bottom, 4)
     }
 
+    private func perAppDefaultBanner(folder: FolderItem, appName: String) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                navigator.selectFolder(folder)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.orange)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Mặc định cho \(appName): \(folder.name)")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(folder.displayPath)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                SubfolderMenuPresenter.shared.popUpSubfolderMenu(for: folder)
+            } label: {
+                Image(systemName: "chevron.right.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.orange)
+            }
+            .buttonStyle(.plain)
+            .help("Duyệt thư mục con / Tạo thư mục mới")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.orange.opacity(0.13))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+        )
+        .padding(.horizontal, 10)
+        .padding(.vertical, 2)
+    }
+
     private func quickFrontFinderBanner(_ folder: FolderItem) -> some View {
         Button {
             navigator.selectFolder(folder)
@@ -328,7 +399,7 @@ struct FloatingPanelView: View {
 
                 Spacer()
 
-                Text("⌘⇧F")
+                Text(hotKeyManager.finderJumpPreset.compactLabel)
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
@@ -528,6 +599,18 @@ struct FloatingPanelView: View {
                     .background(Color.primary.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             }
+
+            // Subfolder cascading menu & New Subfolder button (`▸`)
+            Button {
+                SubfolderMenuPresenter.shared.popUpSubfolderMenu(for: item)
+            } label: {
+                Image(systemName: "chevron.right.circle")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(isHovered ? Color.accentColor : Color.secondary.opacity(0.75))
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.plain)
+            .help("Duyệt cây thư mục con / Tạo thư mục mới / Đặt mặc định cho app")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -544,9 +627,9 @@ struct FloatingPanelView: View {
         HStack {
             Text("⌥1–9 Chọn nhanh")
             Spacer()
-            Text("⌘⇧F Finder đầu")
+            Text("\(hotKeyManager.finderJumpPreset.compactLabel) Finder đầu")
             Spacer()
-            Text("⌘⇧D Ẩn/Hiện")
+            Text("▸ Thư mục con")
         }
         .font(.system(size: 9.5, weight: .medium))
         .foregroundStyle(.secondary)

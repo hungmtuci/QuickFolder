@@ -10,6 +10,16 @@ struct DetectedSavePanel: Equatable, Sendable {
     /// Frame in AppKit screen coordinates (origin at bottom-left of primary screen)
     let cocoaFrame: NSRect
     let isSheet: Bool
+
+    var appIdentifierKey: String {
+        appBundleID ?? appName
+    }
+}
+
+private let axObserverCallback: AXObserverCallback = { _, _, _, _ in
+    Task { @MainActor in
+        SavePanelDetector.shared.handleAXEvent()
+    }
 }
 
 @MainActor
@@ -18,19 +28,43 @@ final class SavePanelDetector: ObservableObject {
 
     @Published private(set) var activePanel: DetectedSavePanel?
     @Published private(set) var isAccessibilityTrusted: Bool = false
+    @Published private(set) var excludedBundleIDs: Set<String> = []
 
     /// Temporarily locks the panel from hiding while FolderNavigator executes Cmd+Shift+G
     var isNavigatingFolder: Bool = false
 
+    private let excludedAppsKey = "QuickFolder.ExcludedBundleIDs.v1"
     private var timer: Timer?
     private var lastTargetPID: pid_t?
+    private var observedPID: pid_t?
+    private var axObserver: AXObserver?
     private weak var inProcessTestPanel: NSSavePanel?
     private let workerQueue = DispatchQueue(label: "com.hunglx.QuickFolder.SavePanelDetector", qos: .userInitiated)
     private var isPollingInFlight = false
+    private var lastAutoJumpedSessionKey: String?
 
     private init() {
+        if let savedExcluded = UserDefaults.standard.stringArray(forKey: excludedAppsKey) {
+            self.excludedBundleIDs = Set(savedExcluded)
+        }
         checkAccessibilityPermission(prompt: false)
         startMonitoring()
+    }
+
+    func isExcluded(_ appKey: String) -> Bool {
+        excludedBundleIDs.contains(appKey)
+    }
+
+    func toggleExcludedApp(_ appKey: String) {
+        if excludedBundleIDs.contains(appKey) {
+            excludedBundleIDs.remove(appKey)
+        } else {
+            excludedBundleIDs.insert(appKey)
+            if activePanel?.appIdentifierKey == appKey {
+                activePanel = nil
+            }
+        }
+        UserDefaults.standard.set(Array(excludedBundleIDs), forKey: excludedAppsKey)
     }
 
     @discardableResult
@@ -38,6 +72,9 @@ final class SavePanelDetector: ObservableObject {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         self.isAccessibilityTrusted = trusted
+        if trusted {
+            attachAXObserverToFrontmostApp()
+        }
         return trusted
     }
 
@@ -47,12 +84,94 @@ final class SavePanelDetector: ObservableObject {
     }
 
     func startMonitoring() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+        attachAXObserverToFrontmostApp()
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
             Task { @MainActor in
+                self?.attachAXObserverToFrontmostApp()
                 self?.pollNow()
             }
         }
+
+        // Low-frequency fallback safety check (1.2s instead of 0.3s) since AXObserver handles instant events
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self else { return }
+                let frontBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                if self.activePanel == nil && self.inProcessTestPanel == nil &&
+                   (frontBundle == "com.apple.finder" || frontBundle == Bundle.main.bundleIdentifier) {
+                    return
+                }
+                self.pollNow()
+            }
+        }
+    }
+
+    fileprivate func handleAXEvent() {
+        pollNow()
+        // Re-check once after 120ms to catch sheet slide-in final bounds
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            self.pollNow()
+        }
+    }
+
+    private func attachAXObserverToFrontmostApp() {
+        guard AXIsProcessTrusted(),
+              let frontApp = NSWorkspace.shared.frontmostApplication else {
+            detachAXObserver()
+            return
+        }
+
+        let pid = frontApp.processIdentifier
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        if pid == myPID || frontApp.bundleIdentifier == "com.apple.finder" {
+            detachAXObserver()
+            return
+        }
+
+        if observedPID == pid, axObserver != nil {
+            return
+        }
+
+        detachAXObserver()
+
+        var newObserver: AXObserver?
+        guard AXObserverCreate(pid, axObserverCallback, &newObserver) == .success,
+              let observer = newObserver else {
+            return
+        }
+
+        let axApp = AXUIElementCreateApplication(pid)
+        let notifications: [String] = [
+            kAXWindowCreatedNotification,
+            kAXSheetCreatedNotification,
+            kAXFocusedWindowChangedNotification,
+            kAXUIElementDestroyedNotification,
+            kAXWindowMovedNotification,
+            kAXWindowResizedNotification
+        ]
+
+        for notif in notifications {
+            AXObserverAddNotification(observer, axApp, notif as CFString, nil)
+        }
+
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        self.axObserver = observer
+        self.observedPID = pid
+    }
+
+    private func detachAXObserver() {
+        if let observer = axObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+        axObserver = nil
+        observedPID = nil
     }
 
     func pollNow() {
@@ -79,9 +198,19 @@ final class SavePanelDetector: ObservableObject {
         isPollingInFlight = true
 
         let myPID = ProcessInfo.processInfo.processIdentifier
-        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let frontApp = NSWorkspace.shared.frontmostApplication
+        let frontPID = frontApp?.processIdentifier
         let prevPID = self.lastTargetPID
         let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1440
+        let excludedSnapshot = self.excludedBundleIDs
+
+        // Cache bundleIDs of running apps on MainActor
+        var bundleByPID: [pid_t: String] = [:]
+        for app in NSWorkspace.shared.runningApplications {
+            if let bid = app.bundleIdentifier {
+                bundleByPID[app.processIdentifier] = bid
+            }
+        }
 
         // Run all WindowServer & Accessibility IPC off the main thread so the UI never blocks
         workerQueue.async { [weak self] in
@@ -91,7 +220,9 @@ final class SavePanelDetector: ObservableObject {
                 frontPID: frontPID,
                 prevPID: prevPID,
                 trusted: trusted,
-                primaryScreenHeight: primaryScreenHeight
+                primaryScreenHeight: primaryScreenHeight,
+                bundleByPID: bundleByPID,
+                excludedKeys: excludedSnapshot
             )
 
             DispatchQueue.main.async {
@@ -107,20 +238,39 @@ final class SavePanelDetector: ObservableObject {
                     return
                 }
                 if let detected = detected {
+                    let wasNil = (self.activePanel == nil)
                     let isNewApp = (self.activePanel?.appPID != detected.appPID)
                     self.lastTargetPID = detected.appPID
                     if self.activePanel != detected {
                         self.activePanel = detected
-                        if isNewApp {
+                        if isNewApp || wasNil {
                             FolderManager.shared.refreshNow()
+                            self.triggerPerAppAutoJumpIfNeeded(for: detected)
                         }
                     }
                 } else {
+                    self.lastAutoJumpedSessionKey = nil
                     if self.activePanel != nil {
                         self.activePanel = nil
                     }
                 }
             }
+        }
+    }
+
+    private func triggerPerAppAutoJumpIfNeeded(for panel: DetectedSavePanel) {
+        guard FolderManager.shared.autoJumpToAppDefault,
+              let defaultItem = FolderManager.shared.defaultFolderItem(for: panel.appIdentifierKey) else {
+            return
+        }
+        let sessionKey = "\(panel.appPID):\(defaultItem.path)"
+        guard lastAutoJumpedSessionKey != sessionKey else { return }
+        lastAutoJumpedSessionKey = sessionKey
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            guard self.activePanel?.appPID == panel.appPID else { return }
+            FolderNavigator.shared.selectFolder(defaultItem)
         }
     }
 
@@ -131,7 +281,9 @@ final class SavePanelDetector: ObservableObject {
         frontPID: pid_t?,
         prevPID: pid_t?,
         trusted: Bool,
-        primaryScreenHeight: CGFloat
+        primaryScreenHeight: CGFloat,
+        bundleByPID: [pid_t: String],
+        excludedKeys: Set<String>
     ) -> DetectedSavePanel? {
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return nil
@@ -172,16 +324,24 @@ final class SavePanelDetector: ObservableObject {
             }
         }
 
-        // Only inspect the top 4 candidate apps
-        let candidatePIDs = Array(orderedPIDs.prefix(4))
+        // Only inspect the top 4 candidate apps (excluding user-excluded apps)
+        let candidatePIDs = orderedPIDs.filter { pid in
+            let bID = bundleByPID[pid]
+            let name = ownerNameByPID[pid] ?? "App"
+            if let bID, excludedKeys.contains(bID) { return false }
+            if excludedKeys.contains(name) { return false }
+            return true
+        }.prefix(4)
 
         // Method A: Fast Accessibility inspection (only checks AXSheet or AXDialog windows, never traverses standard windows!)
         if trusted {
             for pid in candidatePIDs {
                 let appName = ownerNameByPID[pid] ?? "App"
+                let bundleID = bundleByPID[pid]
                 if let detected = inspectPIDForSavePanelAX(
                     pid: pid,
                     appName: appName,
+                    bundleID: bundleID,
                     primaryScreenHeight: primaryScreenHeight
                 ) {
                     return detected
@@ -206,7 +366,7 @@ final class SavePanelDetector: ObservableObject {
                 return DetectedSavePanel(
                     appPID: pid,
                     appName: ownerNameByPID[pid] ?? "App",
-                    appBundleID: nil,
+                    appBundleID: bundleByPID[pid],
                     cocoaFrame: cocoaFrame,
                     isSheet: true
                 )
@@ -219,6 +379,7 @@ final class SavePanelDetector: ObservableObject {
     nonisolated private static func inspectPIDForSavePanelAX(
         pid: pid_t,
         appName: String,
+        bundleID: String?,
         primaryScreenHeight: CGFloat
     ) -> DetectedSavePanel? {
         let appElement = AXUIElementCreateApplication(pid)
@@ -245,7 +406,7 @@ final class SavePanelDetector: ObservableObject {
                     return DetectedSavePanel(
                         appPID: pid,
                         appName: appName,
-                        appBundleID: nil,
+                        appBundleID: bundleID,
                         cocoaFrame: cocoaRect,
                         isSheet: false
                     )
@@ -259,7 +420,7 @@ final class SavePanelDetector: ObservableObject {
                     return DetectedSavePanel(
                         appPID: pid,
                         appName: appName,
-                        appBundleID: nil,
+                        appBundleID: bundleID,
                         cocoaFrame: cocoaRect,
                         isSheet: true
                     )
@@ -275,7 +436,7 @@ final class SavePanelDetector: ObservableObject {
                         return DetectedSavePanel(
                             appPID: pid,
                             appName: appName,
-                            appBundleID: nil,
+                            appBundleID: bundleID,
                             cocoaFrame: cocoaRect,
                             isSheet: false
                         )

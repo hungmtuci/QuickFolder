@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = FolderManager.shared
         _ = SavePanelDetector.shared
         _ = FloatingPanelController.shared
+        _ = FinderClickOverlayController.shared
+        _ = LaunchAtLoginManager.shared
 
         // Apply Dock icon visibility policy (.accessory hides from Dock, .regular shows on Dock)
         FloatingPanelController.shared.applyDockVisibilityPolicy()
@@ -36,8 +38,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupStatusBarMenu()
         setupHotKeys()
 
-        // Open the dashboard window on launch so the user can see live status & test right away
-        showDashboardWindow()
+        // Only auto-open the dashboard on first launch or if Accessibility permission is missing;
+        // otherwise start silently in the Menu Bar.
+        if LaunchAtLoginManager.shared.shouldOpenDashboardOnStartup() {
+            showDashboardWindow()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -79,26 +84,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        LaunchAtLoginManager.shared.refreshStatus()
 
-        let headerItem = NSMenuItem(title: "QuickFolder — Chọn nhanh thư mục", action: nil, keyEquivalent: "")
+        let headerItem = NSMenuItem(
+            title: "QuickFolder v\(UpdateChecker.shared.currentVersion) — Chọn nhanh thư mục",
+            action: nil,
+            keyEquivalent: ""
+        )
         headerItem.isEnabled = false
         menu.addItem(headerItem)
 
         let toggleItem = NSMenuItem(
-            title: "Hiện / Ẩn bảng chọn nổi",
+            title: "Hiện / Ẩn bảng chọn nổi (\(HotKeyManager.shared.togglePreset.compactLabel))",
             action: #selector(toggleFloatingPanelAction),
-            keyEquivalent: "D"
+            keyEquivalent: ""
         )
-        toggleItem.keyEquivalentModifierMask = [.command, .shift]
         toggleItem.target = self
         menu.addItem(toggleItem)
 
         let jumpFinderItem = NSMenuItem(
-            title: "Nhảy tới Finder đang mở đầu tiên",
+            title: "Nhảy tới Finder đang mở đầu tiên (\(HotKeyManager.shared.finderJumpPreset.compactLabel))",
             action: #selector(jumpToFrontFinderAction),
-            keyEquivalent: "F"
+            keyEquivalent: ""
         )
-        jumpFinderItem.keyEquivalentModifierMask = [.command, .shift]
         jumpFinderItem.target = self
         menu.addItem(jumpFinderItem)
 
@@ -153,6 +161,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let launchAtLoginItem = NSMenuItem(
+            title: "Tự khởi động cùng macOS",
+            action: #selector(toggleLaunchAtLoginAction),
+            keyEquivalent: ""
+        )
+        launchAtLoginItem.state = LaunchAtLoginManager.shared.isEnabled ? .on : .off
+        launchAtLoginItem.target = self
+        menu.addItem(launchAtLoginItem)
+
         let hideDockItem = NSMenuItem(
             title: "Ẩn biểu tượng trên thanh Dock",
             action: #selector(toggleHideFromDockAction),
@@ -162,8 +179,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hideDockItem.target = self
         menu.addItem(hideDockItem)
 
+        let finderClickItem = NSMenuItem(
+            title: "Finder-Click (Click cửa sổ Finder phía sau)",
+            action: #selector(toggleFinderClickAction),
+            keyEquivalent: ""
+        )
+        finderClickItem.state = FinderClickOverlayController.shared.isEnabled ? .on : .off
+        finderClickItem.target = self
+        menu.addItem(finderClickItem)
+
+        menu.addItem(.separator())
+
+        let updateItem = NSMenuItem(
+            title: "Kiểm tra bản cập nhật mới...",
+            action: #selector(checkForUpdatesAction),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
+
         let dashboardItem = NSMenuItem(
-            title: "Mở Bảng điều khiển & Thử nghiệm...",
+            title: "Mở Bảng điều khiển & Cài đặt...",
             action: #selector(openDashboardAction),
             keyEquivalent: ","
         )
@@ -179,8 +215,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quitItem)
     }
 
+    @objc private func toggleLaunchAtLoginAction() {
+        LaunchAtLoginManager.shared.toggle()
+    }
+
     @objc private func toggleHideFromDockAction() {
         FloatingPanelController.shared.hideFromDock.toggle()
+    }
+
+    @objc private func toggleFinderClickAction() {
+        FinderClickOverlayController.shared.isEnabled.toggle()
+    }
+
+    @objc private func checkForUpdatesAction() {
+        UpdateChecker.shared.checkForUpdates(showAlert: true)
     }
 
     @objc private func toggleFloatingPanelAction() {
@@ -214,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func showDashboardWindow() {
         if dashboardWindow == nil {
             let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 680, height: 620),
+                contentRect: NSRect(x: 0, y: 0, width: 720, height: 660),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false

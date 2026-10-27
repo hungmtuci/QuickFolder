@@ -6,10 +6,14 @@ struct SettingsAndTestView: View {
     @ObservedObject var detector = SavePanelDetector.shared
     @ObservedObject var panelController = FloatingPanelController.shared
     @ObservedObject var navigator = FolderNavigator.shared
+    @ObservedObject var launchManager = LaunchAtLoginManager.shared
+    @ObservedObject var finderClick = FinderClickOverlayController.shared
+    @ObservedObject var hotKeyManager = HotKeyManager.shared
+    @ObservedObject var updateChecker = UpdateChecker.shared
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 heroBanner
 
                 permissionsSection
@@ -20,7 +24,7 @@ struct SettingsAndTestView: View {
             }
             .padding(20)
         }
-        .frame(minWidth: 640, minHeight: 560)
+        .frame(minWidth: 680, minHeight: 600)
     }
 
     // MARK: - 1. Hero & Built-in Test Save Dialog
@@ -43,25 +47,48 @@ struct SettingsAndTestView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("QuickFolder — Chọn nhanh thư mục khi Lưu / Mở file")
-                    .font(.system(size: 16, weight: .bold))
-                Text("Tự động hiện bảng chọn thư mục đang mở trong Finder & thư mục gần đây bám sát cạnh hộp thoại Save/Open của mọi ứng dụng.")
+                HStack(spacing: 8) {
+                    Text("QuickFolder")
+                        .font(.system(size: 16, weight: .bold))
+                    Text("v\(updateChecker.currentVersion)")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.15))
+                        .foregroundStyle(Color.accentColor)
+                        .clipShape(Capsule())
+                }
+                Text("Tự động hiện thanh bên chọn nhanh thư mục đang mở trên Finder, duyệt cây thư mục con (▸) & hỗ trợ Finder-Click cạnh hộp thoại Save/Open.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Button {
-                openBuiltInTestSavePanel()
-            } label: {
-                Label("Mở hộp thoại Save thử nghiệm", systemImage: "play.fill")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+            VStack(alignment: .trailing, spacing: 6) {
+                Button {
+                    openBuiltInTestSavePanel()
+                } label: {
+                    Label("Mở hộp thoại Save thử nghiệm", systemImage: "play.fill")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+
+                Button {
+                    updateChecker.checkForUpdates(showAlert: true)
+                } label: {
+                    Label(
+                        updateChecker.isChecking ? "Đang kiểm tra..." : "Kiểm tra bản cập nhật GitHub",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                    .font(.system(size: 11))
+                }
+                .controlSize(.small)
+                .disabled(updateChecker.isChecking)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.blue)
         }
         .padding(16)
         .background(
@@ -78,7 +105,7 @@ struct SettingsAndTestView: View {
 
     private var permissionsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("TRẠNG THÁI QUYỀN HỆ THỐNG (MACOS PERMISSIONS)")
+            Text("TRẠNG THÁI QUYỀN HỆ THỐNG & LẮNG NGHE SỰ KIỆN (AXOBSERVER 0% IDLE CPU)")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.secondary)
 
@@ -92,7 +119,7 @@ struct SettingsAndTestView: View {
                         Text("Quyền Trợ năng (Accessibility)")
                             .font(.system(size: 13, weight: .semibold))
                         Spacer()
-                        Text(detector.isAccessibilityTrusted ? "Đã bật" : "Cần cấp quyền")
+                        Text(detector.isAccessibilityTrusted ? "Đã bật (60fps)" : "Cần cấp quyền")
                             .font(.system(size: 11, weight: .bold))
                             .padding(.horizontal, 7)
                             .padding(.vertical, 2)
@@ -101,7 +128,7 @@ struct SettingsAndTestView: View {
                             .clipShape(Capsule())
                     }
 
-                    Text("Dùng để phát hiện khi các ứng dụng khác mở hộp thoại Save/Open và tự động điền đường dẫn thư mục.")
+                    Text("Lắng nghe trực tiếp sự kiện mở/kéo hộp thoại Save/Open qua AXObserver (0% CPU khi nghỉ) và chuyển thư mục tức thì.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -151,7 +178,7 @@ struct SettingsAndTestView: View {
                             .clipShape(Capsule())
                     }
 
-                    Text("Dùng để lấy danh sách các cửa sổ Finder đang mở trên màn hình theo thời gian thực.")
+                    Text("Lấy danh sách & toạ độ các cửa sổ Finder đang mở theo thời gian thực để hỗ trợ chọn nhanh và Finder-Click.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -180,12 +207,19 @@ struct SettingsAndTestView: View {
         }
     }
 
-    // MARK: - 3. Preferences & Keyboard Shortcuts
+    // MARK: - 3. Preferences & Smart Keyboard Shortcuts
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchManager.isEnabled },
+            set: { launchManager.setEnabled($0) }
+        )
+    }
 
     private var preferencesAndShortcutsSection: some View {
         HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("TUỲ CHỈNH HIỂN THỊ")
+            VStack(alignment: .leading, spacing: 9) {
+                Text("TUỲ CHỈNH HỆ THỐNG & THÔNG MINH")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.secondary)
 
@@ -195,17 +229,52 @@ struct SettingsAndTestView: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
-                .font(.system(size: 12.5))
+                .font(.system(size: 12))
 
-                Toggle(isOn: $panelController.hideFromDock) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "dock.rectangle")
-                            .foregroundStyle(.secondary)
-                        Text("Ẩn biểu tượng trên thanh Dock (chỉ hiện ở Menu Bar)")
-                            .font(.system(size: 12.5, weight: .medium))
-                    }
+                Toggle(isOn: launchAtLoginBinding) {
+                    Text("Tự khởi động cùng macOS (chạy êm trên Menu Bar)")
+                        .font(.system(size: 12, weight: .medium))
                 }
                 .toggleStyle(.checkbox)
+
+                if let err = launchManager.lastErrorMessage {
+                    Text(err)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                }
+
+                Toggle(isOn: $panelController.hideFromDock) {
+                    Text("Ẩn biểu tượng trên thanh Dock (chỉ hiện ở Menu Bar)")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .toggleStyle(.checkbox)
+
+                Toggle(isOn: $finderClick.isEnabled) {
+                    Text("Finder-Click: Click cửa sổ Finder phía sau để chọn ngay")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .toggleStyle(.checkbox)
+
+                Toggle(isOn: $folderManager.autoJumpToAppDefault) {
+                    Text("Tự nhảy tới thư mục mặc định đã gán riêng cho từng app")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .toggleStyle(.checkbox)
+
+                if !detector.excludedBundleIDs.isEmpty {
+                    HStack {
+                        Text("Đã ẩn trên \(detector.excludedBundleIDs.count) ứng dụng")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Khôi phục tất cả") {
+                            for key in Array(detector.excludedBundleIDs) {
+                                detector.toggleExcludedApp(key)
+                            }
+                        }
+                        .controlSize(.mini)
+                    }
+                }
 
                 Divider()
 
@@ -220,7 +289,7 @@ struct SettingsAndTestView: View {
                     Button {
                         panelController.toggleManualPanel()
                     } label: {
-                        Label("Hiện/Ẩn bảng nổi (⌘⇧D)", systemImage: "sidebar.right")
+                        Label("Hiện/Ẩn bảng nổi (\(hotKeyManager.togglePreset.compactLabel))", systemImage: "sidebar.right")
                     }
                     .controlSize(.small)
                 }
@@ -230,14 +299,48 @@ struct SettingsAndTestView: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("PHÍM TẮT NHANH (GLOBAL HOTKEYS)")
+            VStack(alignment: .leading, spacing: 10) {
+                Text("PHÍM TẮT THÔNG MINH (KHÔNG XUNG ĐỘT IDE)")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.secondary)
 
-                shortcutRow(keys: "⌘ ⇧ F", desc: "Nhảy ngay tới cửa sổ Finder đang mở đầu tiên")
-                shortcutRow(keys: "⌘ ⇧ D", desc: "Hiện / Ẩn nhanh bảng chọn thư mục nổi")
-                shortcutRow(keys: "⌥ 1 … ⌥ 9", desc: "Chọn nhanh thư mục số 1…9 trong danh sách")
+                HStack {
+                    Text("Nhảy tới Finder đầu tiên:")
+                        .font(.system(size: 12))
+                    Spacer()
+                    Picker("", selection: $hotKeyManager.finderJumpPreset) {
+                        ForEach(FinderJumpShortcutPreset.allCases, id: \.self) { opt in
+                            Text(opt.displayLabel).tag(opt)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 115)
+                }
+
+                Toggle(isOn: $hotKeyManager.onlyInterceptFinderJumpWhenSaveOpen) {
+                    Text("Chỉ bắt phím nhảy Finder khi hộp thoại Save/Open đang mở (tránh trùng ⌘⇧F của VS Code / Word)")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+                .toggleStyle(.checkbox)
+
+                Divider()
+
+                HStack {
+                    Text("Hiện / Ẩn bảng chọn nổi:")
+                        .font(.system(size: 12))
+                    Spacer()
+                    Picker("", selection: $hotKeyManager.togglePreset) {
+                        ForEach(ToggleShortcutPreset.allCases, id: \.self) { opt in
+                            Text(opt.displayLabel).tag(opt)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 115)
+                }
+
+                shortcutRow(keys: "⌥ 1 … ⌥ 9", desc: "Chọn nhanh thư mục số 1…9 khi bảng nổi đang mở")
+                shortcutRow(keys: "Nút ▸", desc: "Duyệt cây thư mục con nhiều cấp & tạo thư mục mới")
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -257,7 +360,7 @@ struct SettingsAndTestView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 5))
 
             Text(desc)
-                .font(.system(size: 12))
+                .font(.system(size: 11.5))
                 .foregroundStyle(.primary)
         }
     }
@@ -361,6 +464,16 @@ struct SettingsAndTestView: View {
             .help("Ghim / Bỏ ghim")
 
             Button {
+                SubfolderMenuPresenter.shared.popUpSubfolderMenu(for: item)
+            } label: {
+                Image(systemName: "chevron.right.circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Duyệt cây thư mục con / Tạo thư mục con")
+
+            Button {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: item.path)
             } label: {
                 Image(systemName: "arrow.up.forward.square")
@@ -381,7 +494,7 @@ struct SettingsAndTestView: View {
         folderManager.refreshNow()
         let savePanel = NSSavePanel()
         savePanel.title = "Lưu tài liệu thử nghiệm (QuickFolder Demo)"
-        savePanel.message = "Hãy bấm chọn bất kỳ thư mục nào ở bảng QuickFolder bên cạnh (hoặc bấm ⌥1..⌥9, ⌘⇧F) để nhảy tới thư mục đó!"
+        savePanel.message = "Hãy bấm chọn bất kỳ thư mục nào (hoặc bấm nút ▸ để duyệt thư mục con / tạo thư mục mới) ở bảng QuickFolder bên cạnh!"
         savePanel.nameFieldStringValue = "BaoCao_DuAn_2026.pdf"
         savePanel.canCreateDirectories = true
 

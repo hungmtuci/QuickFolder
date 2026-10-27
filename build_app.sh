@@ -6,14 +6,15 @@ cd "$PROJECT_DIR"
 
 APP_NAME="QuickFolder"
 BUNDLE_ID="com.hunglx.QuickFolder"
-VERSION="1.0.0"
+VERSION="1.1.0"
+BUILD_NUM="2"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 DIST_DIR="$PROJECT_DIR/dist"
 
-echo "==> [1/5] Đang biên dịch $APP_NAME (Universal Binary arm64 + x86_64 Release)..."
+echo "==> [1/5] Đang biên dịch $APP_NAME v$VERSION (Universal Binary arm64 + x86_64 Release)..."
 if swift build -c release --product "$APP_NAME" --arch arm64 --arch x86_64 2>/dev/null; then
     BIN_PATH="$(swift build -c release --product "$APP_NAME" --arch arm64 --arch x86_64 --show-bin-path)/$APP_NAME"
 else
@@ -127,7 +128,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${BUILD_NUM}</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
@@ -149,9 +150,22 @@ cat > "$PROJECT_DIR/entitlements.plist" <<EOF
 </plist>
 EOF
 
-echo "==> [4/5] Đang ký số (Ad-hoc Codesign)..."
+echo "==> [4/5] Đang ký số (Codesign)..."
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
-codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign - "$APP_BUNDLE"
+
+SIGN_IDENTITY="-"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -n1 | awk -F'"' '{print $2}')"
+elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning | grep "Apple Development" | head -n1 | awk -F'"' '{print $2}')"
+elif security find-identity -v -p codesigning 2>/dev/null | grep -q "QuickFolder Developer"; then
+    SIGN_IDENTITY="QuickFolder Developer"
+fi
+
+echo "    -> Sử dụng danh tính ký số: $SIGN_IDENTITY"
+if ! codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign "$SIGN_IDENTITY" "$APP_BUNDLE" 2>/dev/null; then
+    codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign - "$APP_BUNDLE"
+fi
 
 echo "==> [5/5] Đang tạo bộ cài đặt .DMG và .ZIP tại thư mục dist/..."
 rm -rf "$DIST_DIR"

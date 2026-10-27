@@ -195,6 +195,7 @@ final class FloatingPanelController: ObservableObject {
         guard let panel = panel else { return }
         if !panel.isVisible {
             panel.orderFrontRegardless()
+            HotKeyManager.shared.notifyPanelVisibilityChanged()
         }
     }
 
@@ -202,6 +203,7 @@ final class FloatingPanelController: ObservableObject {
         guard let panel = panel, panel.isVisible else { return }
         panel.allowKeyFocus = false
         panel.orderOut(nil)
+        HotKeyManager.shared.notifyPanelVisibilityChanged()
     }
 
     func positionBeside(savePanelFrame: NSRect) {

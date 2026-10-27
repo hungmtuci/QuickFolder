@@ -47,6 +47,10 @@ final class FolderNavigator: ObservableObject {
         }
     }
 
+    func navigateToSpecificTarget(targetPID: pid_t, folderPath: String, folderName: String) {
+        navigateExternalSavePanel(targetPID: targetPID, folderPath: folderPath, folderName: folderName)
+    }
+
     private func navigateExternalSavePanel(targetPID: pid_t, folderPath: String, folderName: String) {
         let detector = SavePanelDetector.shared
         detector.isNavigatingFolder = true

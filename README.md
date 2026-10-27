@@ -12,31 +12,31 @@
   <img src="docs/images/settings-dashboard.png" alt="Bảng điều khiển Cài đặt & Thử nghiệm QuickFolder" width="760" />
 </p>
 
-## ✨ Tính năng nổi bật
+## ✨ Tính năng nổi bật (v1.1.0)
 
-- **Thanh bên nổi tự động (Auto-Docking Sidebar)**: Tự động xuất hiện bám sát cạnh phải hoặc cạnh trái của hộp thoại `Save` / `Open` ngay khi ứng dụng bất kỳ mở hộp thoại lưu/mở file (kể cả trên thiết lập đa màn hình).
-- **Cửa sổ Finder đang mở theo thời gian thực**: Liệt kê toàn bộ các thư mục đang mở trên Finder để nhảy tới chỉ với **1 cú nhấp chuột** (không cướp tiêu điểm bàn phím của hộp thoại Save).
-- **Thư mục gần đây & Đã ghim yêu thích**: Tự động đồng bộ lịch sử thư mục gần đây từ Finder (`FXRecentFolders`), lưu lịch sử các thư mục đã chọn và cho phép ghim (Pin) các thư mục hay dùng lên đầu.
-- **Chuyển thư mục siêu tốc & Tự động cuộn cột cuối**:
-  - Chọn trực tiếp tức thì (`0ms`) với các thư mục trên thanh bên chuẩn của macOS.
-  - Tự động điền đường dẫn Unicode siêu nhanh (`~0.2s`, không ghi đè Clipboard) cho các thư mục con sâu (kể cả Google Drive / CloudStorage) và tự động cuộn thanh trượt ngang `Column View` tới cột cuối cùng.
-- **Chế độ Menu Bar gọn nhẹ**: Hỗ trợ ẩn biểu tượng khỏi thanh Dock macOS, chỉ hiển thị gọn trên thanh Menu Bar phía trên.
+- **Thanh bên nổi tự động & Bám theo thời gian thực (`AXObserver` 60fps, ~0% CPU khi nghỉ)**: Tự động xuất hiện bám sát cạnh phải hoặc cạnh trái của hộp thoại `Save` / `Open` qua sự kiện `AXObserver` mà không tốn CPU chạy ngầm khi nghỉ.
+- **Finder-Click (Click trực tiếp cửa sổ Finder nằm phía sau)**: Khi hộp thoại Save/Open đang mở, chỉ cần di chuột ra vùng cửa sổ Finder bất kỳ trên màn hình và click 1 lần để nhảy hộp thoại Save tới thẳng thư mục đó.
+- **Duyệt cây thư mục con nhiều cấp (`▸`) & Tạo thư mục mới tức thì**: Nút `▸` trên mỗi dòng cho phép duyệt đệ quy toàn bộ cây thư mục con hoặc tạo nhanh thư mục con mới và chuyển hộp thoại Save vào ngay lập tức.
+- **Thư mục mặc định riêng cho từng ứng dụng (Per-App Default Folder)**: Gán thư mục quen dùng riêng cho từng app (ví dụ Word, Excel, Chrome) và tuỳ chọn tự động nhảy ngay khi mở hộp thoại Save.
+- **Phím tắt thông minh không xung đột IDE**: Tự động chỉ bắt `⌘⇧F` khi hộp thoại Save/Open thực sự đang mở (không bao giờ đè lên *Find in Files* `⌘⇧F` trong VS Code / Xcode / trình duyệt), kèm tuỳ chọn đổi tổ hợp phím tắt.
+- **Khởi động êm cùng macOS (`Launch at Login`) & Ẩn trên thanh Dock**: Chạy gọn gàng hoàn toàn trên thanh Menu Bar, kèm tính năng kiểm tra cập nhật trực tiếp từ GitHub Releases.
 
-## ⌨️ Phím tắt toàn cục (Global Hotkeys)
+## ⌨️ Phím tắt thông minh (Smart Hotkeys)
 
-| Phím tắt | Chức năng |
+| Phím tắt (Tuỳ chỉnh được) | Chức năng |
 | :--- | :--- |
-| `⌘ ⇧ F` | Nhảy ngay hộp thoại Save/Open tới cửa sổ Finder đang mở đầu tiên |
-| `⌘ ⇧ D` | Hiện / Ẩn nhanh bảng chọn thư mục nổi |
+| `⌘ ⇧ F` *(hoặc `⌥ F`, `⌃ ⌥ F`)* | Nhảy ngay hộp thoại Save/Open tới cửa sổ Finder đang mở đầu tiên *(chỉ kích hoạt khi đang mở Save/Open)* |
+| `⌘ ⇧ D` *(hoặc `⌃ ⌥ D`, `⌥ Space`)* | Hiện / Ẩn nhanh bảng chọn thư mục nổi |
 | `⌥ 1` … `⌥ 9` | Chọn nhanh thư mục ở vị trí số `1` … `9` trong danh sách |
+| Nút `▸` | Bung menu cây thư mục con nhiều cấp, tạo thư mục con mới hoặc đặt mặc định cho ứng dụng |
 
 ---
 
 ## 📥 Tải về & Cài đặt nhanh (macOS 14.0+ Universal: Apple Silicon & Intel)
 
 1. Tải bộ cài mới nhất tại trang **[Releases](https://github.com/hungmtuci/QuickFolder/releases/latest)**:
-   - **`QuickFolder-Installer-v1.0.0.dmg`** *(Khuyên dùng)*
-   - Hoặc **`QuickFolder-v1.0.0-macOS.zip`**
+   - **`QuickFolder-Installer-v1.1.0.dmg`** *(Khuyên dùng)*
+   - Hoặc **`QuickFolder-v1.1.0-macOS.zip`**
 2. Mở file `.dmg`:
    - Kéo `QuickFolder.app` thả vào thư mục **`Applications`**, **HOẶC** nhấp chuột phải vào `Cai_Dat_QuickFolder.command` -> chọn **Open** để tự động cài đặt và gỡ cờ cách ly Gatekeeper.
 3. Nếu macOS báo ứng dụng chưa công chứng Apple Developer ID khi mở lần đầu trên máy mới, chạy lệnh sau trong Terminal:
@@ -54,7 +54,12 @@ Yêu cầu: macOS 14.0+ và Xcode hoặc Command Line Tools (`xcode-select --ins
 ```bash
 git clone https://github.com/hungmtuci/QuickFolder.git
 cd QuickFolder
-chmod +x build_app.sh
+chmod +x build_app.sh scripts/setup_signing_cert.sh
+
+# (Tuỳ chọn) Tạo chứng chỉ ký nội bộ để macOS giữ quyền Accessibility qua các lần build lại:
+./scripts/setup_signing_cert.sh
+
+# Biên dịch Universal Binary và tạo bộ cài .dmg / .zip:
 ./build_app.sh
 ```
 
