@@ -77,17 +77,31 @@ struct SettingsAndTestView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
 
-                Button {
-                    updateChecker.checkForUpdates(showAlert: true)
-                } label: {
-                    Label(
-                        updateChecker.isChecking ? "Đang kiểm tra..." : "Kiểm tra bản cập nhật GitHub",
-                        systemImage: "arrow.triangle.2.circlepath"
-                    )
-                    .font(.system(size: 11))
+                if let newVer = updateChecker.availableVersion, !updateChecker.isInstallingUpdate {
+                    Button {
+                        updateChecker.installAvailableUpdate()
+                    } label: {
+                        Label("Tải & Cập nhật tự động (v\(newVer))", systemImage: "arrow.down.circle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        updateChecker.checkForUpdates(showAlert: true)
+                    } label: {
+                        Label(
+                            updateChecker.isInstallingUpdate
+                                ? (updateChecker.statusText ?? "Đang cập nhật...")
+                                : (updateChecker.isChecking ? "Đang kiểm tra..." : "Kiểm tra cập nhật"),
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .font(.system(size: 11))
+                    }
+                    .controlSize(.small)
+                    .disabled(updateChecker.isChecking || updateChecker.isInstallingUpdate)
                 }
-                .controlSize(.small)
-                .disabled(updateChecker.isChecking)
             }
         }
         .padding(16)

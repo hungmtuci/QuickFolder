@@ -43,6 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if LaunchAtLoginManager.shared.shouldOpenDashboardOnStartup() {
             showDashboardWindow()
         }
+
+        // Silently check GitHub Releases (hungmtuci/QuickFolder) shortly after startup
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+            UpdateChecker.shared.checkSilentlyOnStartup()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -190,13 +195,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let updateItem = NSMenuItem(
-            title: "Kiểm tra bản cập nhật mới...",
-            action: #selector(checkForUpdatesAction),
-            keyEquivalent: ""
-        )
-        updateItem.target = self
-        menu.addItem(updateItem)
+        let updater = UpdateChecker.shared
+        if let button = statusItem.button {
+            if let newVer = updater.availableVersion {
+                button.toolTip = "QuickFolder — Đã có bản cập nhật mới v\(newVer)!"
+            } else {
+                button.toolTip = "QuickFolder — Chọn nhanh thư mục khi Lưu/Mở file"
+            }
+        }
+
+        if updater.isInstallingUpdate {
+            let installingItem = NSMenuItem(
+                title: updater.statusText ?? "Đang tải & cập nhật tự động...",
+                action: nil,
+                keyEquivalent: ""
+            )
+            installingItem.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+            installingItem.isEnabled = false
+            menu.addItem(installingItem)
+        } else {
+            if let newVer = updater.availableVersion {
+                let autoUpdateItem = NSMenuItem(
+                    title: "Tải & Cập nhật tự động (v\(newVer))",
+                    action: #selector(installAvailableUpdateAction),
+                    keyEquivalent: ""
+                )
+                autoUpdateItem.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
+                autoUpdateItem.target = self
+                menu.addItem(autoUpdateItem)
+            }
+
+            let updateItem = NSMenuItem(
+                title: updater.isChecking ? "Đang kiểm tra cập nhật..." : "Kiểm tra cập nhật",
+                action: updater.isChecking ? nil : #selector(checkForUpdatesAction),
+                keyEquivalent: ""
+            )
+            updateItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)
+            updateItem.isEnabled = !updater.isChecking
+            updateItem.target = self
+            menu.addItem(updateItem)
+        }
 
         let dashboardItem = NSMenuItem(
             title: "Mở Bảng điều khiển & Cài đặt...",
@@ -229,6 +267,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func checkForUpdatesAction() {
         UpdateChecker.shared.checkForUpdates(showAlert: true)
+    }
+
+    @objc private func installAvailableUpdateAction() {
+        UpdateChecker.shared.installAvailableUpdate()
     }
 
     @objc private func toggleFloatingPanelAction() {
