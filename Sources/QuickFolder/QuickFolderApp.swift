@@ -170,13 +170,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         let launchAtLoginItem = NSMenuItem(
-            title: "Tự khởi động cùng macOS",
+            title: "Khởi động cùng macOS",
             action: #selector(toggleLaunchAtLoginAction),
             keyEquivalent: ""
         )
         launchAtLoginItem.state = LaunchAtLoginManager.shared.isEnabled ? .on : .off
         launchAtLoginItem.target = self
         menu.addItem(launchAtLoginItem)
+
+        let openOnStartupItem = NSMenuItem(
+            title: "Bật bảng điều khiển khi khởi động",
+            action: #selector(toggleOpenDashboardOnStartupAction),
+            keyEquivalent: ""
+        )
+        openOnStartupItem.state = LaunchAtLoginManager.shared.openDashboardOnStartup ? .on : .off
+        openOnStartupItem.target = self
+        menu.addItem(openOnStartupItem)
 
         let hideDockItem = NSMenuItem(
             title: "Ẩn biểu tượng trên thanh Dock",
@@ -258,6 +267,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleLaunchAtLoginAction() {
         LaunchAtLoginManager.shared.toggle()
+    }
+
+    @objc private func toggleOpenDashboardOnStartupAction() {
+        LaunchAtLoginManager.shared.openDashboardOnStartup.toggle()
     }
 
     @objc private func toggleHideFromDockAction() {

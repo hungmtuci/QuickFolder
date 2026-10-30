@@ -13,8 +13,10 @@ struct SettingsAndTestView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
                 heroBanner
+
+                startupOptionsBar
 
                 permissionsSection
 
@@ -25,6 +27,109 @@ struct SettingsAndTestView: View {
             .padding(20)
         }
         .frame(minWidth: 680, minHeight: 600)
+    }
+
+    // MARK: - Quick Startup Options Bar ("Khởi động cùng macOS" & "Bật bảng này khi khởi động")
+
+    private var startupOptionsBar: some View {
+        HStack(spacing: 9) {
+            startupCheckboxButton(
+                title: "Khởi động cùng macOS",
+                systemImage: "power.circle",
+                isChecked: launchManager.isEnabled
+            ) {
+                launchManager.toggle()
+            }
+            .help("Tự động mở QuickFolder ngay khi bạn đăng nhập vào máy Mac")
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.14))
+                .frame(width: 1, height: 14)
+
+            startupCheckboxButton(
+                title: "Bật bảng này khi khởi động",
+                systemImage: "macwindow.badge.plus",
+                isChecked: launchManager.openDashboardOnStartup
+            ) {
+                launchManager.openDashboardOnStartup.toggle()
+            }
+            .help("Mở sẵn cửa sổ Cài đặt & Thử nghiệm này mỗi khi QuickFolder khởi động (bỏ chọn để chạy ngầm êm trên Menu Bar)")
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.14))
+                .frame(width: 1, height: 14)
+
+            startupCheckboxButton(
+                title: "Ẩn trên thanh Dock",
+                systemImage: "dock.rectangle",
+                isChecked: panelController.hideFromDock
+            ) {
+                panelController.hideFromDock.toggle()
+            }
+            .help("Ẩn biểu tượng QuickFolder khỏi thanh Dock, chỉ giữ trên thanh Menu Bar")
+
+            Spacer(minLength: 4)
+
+            Text(launchManager.openDashboardOnStartup ? "Mở ngay" : "Chạy ngầm")
+                .font(.system(size: 10.5, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule()
+                        .fill((launchManager.openDashboardOnStartup ? Color.accentColor : Color.green).opacity(0.14))
+                )
+                .foregroundStyle(launchManager.openDashboardOnStartup ? Color.accentColor : Color.green)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+        )
+    }
+
+    private func startupCheckboxButton(
+        title: String,
+        systemImage: String,
+        isChecked: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5.5) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(isChecked ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+                        .frame(width: 14, height: 14)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .strokeBorder(isChecked ? Color.accentColor : Color.primary.opacity(0.28), lineWidth: 1)
+                        )
+                    if isChecked {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+
+                Image(systemName: systemImage)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(isChecked ? Color.accentColor : .secondary)
+
+                Text(title)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - 1. Hero & Built-in Test Save Dialog
@@ -256,7 +361,13 @@ struct SettingsAndTestView: View {
                 .font(.system(size: 12))
 
                 Toggle(isOn: launchAtLoginBinding) {
-                    Text("Tự khởi động cùng macOS (chạy êm trên Menu Bar)")
+                    Text("Khởi động cùng macOS")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .toggleStyle(.checkbox)
+
+                Toggle(isOn: $launchManager.openDashboardOnStartup) {
+                    Text("Bật bảng này khi khởi động (bỏ chọn để chạy ngầm trên Menu Bar)")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .toggleStyle(.checkbox)

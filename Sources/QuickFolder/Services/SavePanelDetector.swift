@@ -97,9 +97,9 @@ final class SavePanelDetector: ObservableObject {
             }
         }
 
-        // Low-frequency fallback safety check (1.2s instead of 0.3s) since AXObserver handles instant events
+        // Low-frequency fallback safety check (2.5s) since AXObserver + NSWorkspace handle instant events
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
                 let frontBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
