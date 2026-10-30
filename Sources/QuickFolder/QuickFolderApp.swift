@@ -38,9 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupStatusBarMenu()
         setupHotKeys()
 
-        // Only auto-open the dashboard on first launch or if Accessibility permission is missing;
-        // otherwise start silently in the Menu Bar.
-        if LaunchAtLoginManager.shared.shouldOpenDashboardOnStartup() {
+        // Auto-open the dashboard after a GitHub self-update, explicit CLI flag, first launch, or missing Accessibility permission
+        let didJustUpdate = UserDefaults.standard.bool(forKey: "QF_OpenDashboardAfterUpdate")
+        if didJustUpdate {
+            UserDefaults.standard.removeObject(forKey: "QF_OpenDashboardAfterUpdate")
+        }
+        if didJustUpdate || CommandLine.arguments.contains("--open-dashboard") || LaunchAtLoginManager.shared.shouldOpenDashboardOnStartup() {
             showDashboardWindow()
         }
 
@@ -216,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             if let newVer = updater.availableVersion {
                 let autoUpdateItem = NSMenuItem(
-                    title: "Tải & Cập nhật tự động (v\(newVer))",
+                    title: "Update ngay lên v\(newVer) từ GitHub",
                     action: #selector(installAvailableUpdateAction),
                     keyEquivalent: ""
                 )
@@ -226,11 +229,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
             let updateItem = NSMenuItem(
-                title: updater.isChecking ? "Đang kiểm tra cập nhật..." : "Kiểm tra cập nhật",
+                title: updater.isChecking ? "Đang kết nối GitHub..." : "Update từ GitHub...",
                 action: updater.isChecking ? nil : #selector(checkForUpdatesAction),
-                keyEquivalent: ""
+                keyEquivalent: "u"
             )
-            updateItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)
+            updateItem.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
             updateItem.isEnabled = !updater.isChecking
             updateItem.target = self
             menu.addItem(updateItem)

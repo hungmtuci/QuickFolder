@@ -7,6 +7,7 @@ struct FloatingPanelView: View {
     @ObservedObject var navigator: FolderNavigator
     @ObservedObject var panelController: FloatingPanelController
     @ObservedObject var hotKeyManager: HotKeyManager
+    @ObservedObject var updateChecker: UpdateChecker
 
     var onCloseRequested: (() -> Void)?
 
@@ -20,6 +21,7 @@ struct FloatingPanelView: View {
         self.navigator = FolderNavigator.shared
         self.panelController = panelController
         self.hotKeyManager = HotKeyManager.shared
+        self.updateChecker = UpdateChecker.shared
         self.onCloseRequested = onCloseRequested
     }
 
@@ -63,6 +65,10 @@ struct FloatingPanelView: View {
                         .opacity(0.5)
 
                     searchBarSection
+
+                    if let newVer = updateChecker.availableVersion {
+                        githubUpdateBanner(version: newVer)
+                    }
 
                     if let activeApp = detector.activePanel,
                        let appDefault = folderManager.defaultFolderItem(for: activeApp.appIdentifierKey),
@@ -174,6 +180,51 @@ struct FloatingPanelView: View {
 
             Spacer()
 
+            // Update from GitHub button (with green badge if a new version is available)
+            Button {
+                if updateChecker.availableVersion != nil {
+                    updateChecker.installAvailableUpdate()
+                } else {
+                    updateChecker.checkForUpdates(showAlert: true)
+                }
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(updateChecker.availableVersion != nil ? Color.green.opacity(0.22) : Color.primary.opacity(0.08))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: updateChecker.availableVersion != nil ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(updateChecker.availableVersion != nil ? Color.green : Color.secondary)
+                        .frame(width: 34, height: 34)
+
+                    if updateChecker.availableVersion != nil {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                            .offset(x: 2, y: -2)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(updateChecker.isChecking || updateChecker.isInstallingUpdate)
+            .help(updateChecker.availableVersion.map { "Update ngay lên v\($0) từ GitHub" } ?? "Update từ GitHub")
+
+            // Open Settings & Dashboard window
+            Button {
+                AppDelegate.shared?.showDashboardWindow()
+            } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Mở Cài đặt & Thử nghiệm")
+
             // Collapse / Expand Sidebar Toggle
             Button {
                 panelController.isCompactBezel.toggle()
@@ -256,6 +307,31 @@ struct FloatingPanelView: View {
             Spacer()
 
             Button {
+                if updateChecker.availableVersion != nil {
+                    updateChecker.installAvailableUpdate()
+                } else {
+                    updateChecker.checkForUpdates(showAlert: true)
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: updateChecker.availableVersion != nil ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
+                        .font(.system(size: 9.5, weight: .semibold))
+                    Text(updateChecker.availableVersion.map { "v\($0)" } ?? "Update")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule()
+                        .fill(updateChecker.availableVersion != nil ? Color.green.opacity(0.2) : Color.primary.opacity(0.08))
+                )
+                .foregroundStyle(updateChecker.availableVersion != nil ? Color.green : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(updateChecker.isChecking || updateChecker.isInstallingUpdate)
+            .help("Update từ GitHub (hungmtuci/QuickFolder)")
+
+            Button {
                 folderManager.refreshNow()
             } label: {
                 Image(systemName: "arrow.clockwise")
@@ -325,6 +401,51 @@ struct FloatingPanelView: View {
         .padding(.horizontal, 10)
         .padding(.top, 8)
         .padding(.bottom, 4)
+    }
+
+    private func githubUpdateBanner(version: String) -> some View {
+        Button {
+            updateChecker.installAvailableUpdate()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.green)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Đã có QuickFolder v\(version) trên GitHub")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("Bấm để tải & cập nhật tự động ngay")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Text("Update")
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(Capsule().fill(Color.green))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.green.opacity(0.14))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.green.opacity(0.4), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 2)
     }
 
     private func perAppDefaultBanner(folder: FolderItem, appName: String) -> some View {

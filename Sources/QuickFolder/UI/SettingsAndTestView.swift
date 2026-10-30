@@ -81,8 +81,10 @@ struct SettingsAndTestView: View {
                     Button {
                         updateChecker.installAvailableUpdate()
                     } label: {
-                        Label("Tải & Cập nhật tự động (v\(newVer))", systemImage: "arrow.down.circle.fill")
-                            .font(.system(size: 11, weight: .semibold))
+                        Label("Update ngay lên v\(newVer) từ GitHub", systemImage: "arrow.down.circle.fill")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
@@ -93,12 +95,16 @@ struct SettingsAndTestView: View {
                     } label: {
                         Label(
                             updateChecker.isInstallingUpdate
-                                ? (updateChecker.statusText ?? "Đang cập nhật...")
-                                : (updateChecker.isChecking ? "Đang kiểm tra..." : "Kiểm tra cập nhật"),
-                            systemImage: "arrow.triangle.2.circlepath"
+                                ? (updateChecker.statusText ?? "Đang cập nhật từ GitHub...")
+                                : (updateChecker.isChecking ? "Đang kết nối GitHub..." : "Update từ GitHub"),
+                            systemImage: "arrow.down.circle.fill"
                         )
-                        .font(.system(size: 11))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                     }
+                    .buttonStyle(.bordered)
+                    .tint(.green)
                     .controlSize(.small)
                     .disabled(updateChecker.isChecking || updateChecker.isInstallingUpdate)
                 }

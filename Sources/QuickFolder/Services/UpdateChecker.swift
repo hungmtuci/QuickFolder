@@ -25,7 +25,7 @@ final class UpdateChecker: ObservableObject {
     private var progressBar: NSProgressIndicator?
 
     var currentVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.2.0"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.3.0"
     }
 
     private init() {}
@@ -60,18 +60,18 @@ final class UpdateChecker: ObservableObject {
 
                 isChecking = false
 
+                let zipURL = release.assets
+                    .first(where: { $0.name.lowercased().hasSuffix(".zip") })
+                    .flatMap { URL(string: $0.browser_download_url) }
+
+                let dmgURL = release.assets
+                    .first(where: { $0.name.lowercased().hasSuffix(".dmg") })
+                    .flatMap { URL(string: $0.browser_download_url) }
+
+                let htmlURL = URL(string: release.html_url) ?? releasesPageURL
+                let autoAssetURL = zipURL ?? dmgURL
+
                 if Self.isNewerVersion(remote: remoteVersion, local: localVersion) {
-                    let zipURL = release.assets
-                        .first(where: { $0.name.lowercased().hasSuffix(".zip") })
-                        .flatMap { URL(string: $0.browser_download_url) }
-
-                    let dmgURL = release.assets
-                        .first(where: { $0.name.lowercased().hasSuffix(".dmg") })
-                        .flatMap { URL(string: $0.browser_download_url) }
-
-                    let htmlURL = URL(string: release.html_url) ?? releasesPageURL
-                    let autoAssetURL = zipURL ?? dmgURL
-
                     availableVersion = remoteVersion
                     cachedAutoUpdateURL = autoAssetURL
                     cachedDmgURL = dmgURL
@@ -90,10 +90,17 @@ final class UpdateChecker: ObservableObject {
                     }
                 } else {
                     availableVersion = nil
-                    cachedAutoUpdateURL = nil
+                    cachedAutoUpdateURL = autoAssetURL
+                    cachedDmgURL = dmgURL
+                    cachedReleasePageURL = htmlURL
                     statusText = "Đang ở bản mới nhất (v\(localVersion))"
                     if showAlert {
-                        presentUpToDateAlert(version: localVersion)
+                        presentUpToDateAlert(
+                            localVersion: localVersion,
+                            remoteVersion: remoteVersion,
+                            autoUpdateURL: autoAssetURL,
+                            releaseURL: htmlURL
+                        )
                     }
                 }
             } catch {
@@ -184,14 +191,40 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
-    private func presentUpToDateAlert(version: String) {
+    private func presentUpToDateAlert(
+        localVersion: String,
+        remoteVersion: String,
+        autoUpdateURL: URL?,
+        releaseURL: URL
+    ) {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Bạn đang dùng phiên bản mới nhất"
-        alert.informativeText = "QuickFolder v\(version) hiện là bản phát hành mới nhất trên GitHub (hungmtuci/QuickFolder)."
-        alert.addButton(withTitle: "OK")
+        alert.messageText = "Bạn đang ở phiên bản mới nhất (v\(localVersion))"
+        alert.informativeText = "Bản mới nhất trên GitHub (hungmtuci/QuickFolder) hiện là v\(remoteVersion).\nBạn vẫn có thể bấm 'Tải & Cài lại từ GitHub' nếu muốn đồng bộ lại bản sạch trực tiếp từ GitHub."
+        alert.addButton(withTitle: "Đóng")
+        if autoUpdateURL != nil {
+            alert.addButton(withTitle: "Tải & Cài lại từ GitHub (v\(remoteVersion))")
+        }
+        alert.addButton(withTitle: "Mở trang GitHub")
+
         NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        let response = alert.runModal()
+
+        if let autoURL = autoUpdateURL {
+            if response == .alertSecondButtonReturn {
+                Task {
+                    await downloadAndInstallUpdate(
+                        remoteVersion: remoteVersion,
+                        assetURL: autoURL,
+                        fallbackURL: releaseURL
+                    )
+                }
+            } else if response == .alertThirdButtonReturn {
+                NSWorkspace.shared.open(releaseURL)
+            }
+        } else if response == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(releaseURL)
+        }
     }
 
     // MARK: - Automatic Download, Extraction & Self-Replacement
@@ -243,6 +276,9 @@ final class UpdateChecker: ObservableObject {
                 fraction: 1.0,
                 indeterminate: true
             )
+
+            UserDefaults.standard.set(true, forKey: "QF_OpenDashboardAfterUpdate")
+            UserDefaults.standard.synchronize()
 
             try launchDetachedSwapAndRestart(extractedAppURL: extractedAppURL, stageDir: stageDir)
 
