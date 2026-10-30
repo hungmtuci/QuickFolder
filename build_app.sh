@@ -6,8 +6,8 @@ cd "$PROJECT_DIR"
 
 APP_NAME="QuickFolder"
 BUNDLE_ID="com.hunglx.QuickFolder"
-VERSION="1.3.0"
-BUILD_NUM="4"
+VERSION="1.3.1"
+BUILD_NUM="5"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -97,14 +97,16 @@ for (px, name) in sizes {
 SWIFT_ICON
 
 echo "==> [3/5] Đang đóng gói $APP_NAME.app..."
-rm -rf "$APP_BUNDLE"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+TMP_STAGE="$(mktemp -d /tmp/quickfolder_pkg.XXXXXX)"
+trap 'rm -rf "$TMP_STAGE"' EXIT
+STAGE_APP="$TMP_STAGE/$APP_NAME.app"
+mkdir -p "$STAGE_APP/Contents/MacOS" "$STAGE_APP/Contents/Resources"
 
-cp "$BIN_PATH" "$MACOS_DIR/$APP_NAME"
-chmod +x "$MACOS_DIR/$APP_NAME"
-iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/AppIcon.icns" || true
+ditto --noextattr "$BIN_PATH" "$STAGE_APP/Contents/MacOS/$APP_NAME"
+chmod +x "$STAGE_APP/Contents/MacOS/$APP_NAME"
+iconutil -c icns "$ICONSET_DIR" -o "$STAGE_APP/Contents/Resources/AppIcon.icns" || true
 
-cat > "$CONTENTS_DIR/Info.plist" <<EOF
+cat > "$STAGE_APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -151,7 +153,7 @@ cat > "$PROJECT_DIR/entitlements.plist" <<EOF
 EOF
 
 echo "==> [4/5] Đang ký số (Codesign)..."
-xattr -cr "$APP_BUNDLE" 2>/dev/null || true
+xattr -cr "$STAGE_APP" 2>/dev/null || true
 
 SIGN_IDENTITY="-"
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
@@ -163,19 +165,21 @@ elif security find-identity -v -p codesigning 2>/dev/null | grep -q "QuickFolder
 fi
 
 echo "    -> Sử dụng danh tính ký số: $SIGN_IDENTITY"
-if ! codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign "$SIGN_IDENTITY" "$APP_BUNDLE" 2>/dev/null; then
-    codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign - "$APP_BUNDLE"
+if ! codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign "$SIGN_IDENTITY" "$STAGE_APP" 2>/dev/null; then
+    codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign - "$STAGE_APP"
 fi
+
+rm -rf "$APP_BUNDLE"
+ditto --noextattr "$STAGE_APP" "$APP_BUNDLE"
 
 echo "==> [5/5] Đang tạo bộ cài đặt .DMG và .ZIP tại thư mục dist/..."
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
-DMG_STAGING="$PROJECT_DIR/.build/dmg_staging"
-rm -rf "$DMG_STAGING"
+DMG_STAGING="$TMP_STAGE/dmg_staging"
 mkdir -p "$DMG_STAGING"
 
-cp -R "$APP_BUNDLE" "$DMG_STAGING/$APP_NAME.app"
+ditto --noextattr "$STAGE_APP" "$DMG_STAGING/$APP_NAME.app"
 ln -s /Applications "$DMG_STAGING/Applications"
 
 cat > "$DMG_STAGING/Cai_Dat_QuickFolder.command" << 'INSTALLER_EOF'
@@ -213,7 +217,7 @@ hdiutil create -volname "${APP_NAME} Installer" \
     "$DMG_PATH" >/dev/null
 
 ZIP_PATH="$DIST_DIR/${APP_NAME}-v${VERSION}-macOS.zip"
-ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+ditto -c -k --noextattr --keepParent "$STAGE_APP" "$ZIP_PATH"
 
 rm -rf "$DMG_STAGING"
 

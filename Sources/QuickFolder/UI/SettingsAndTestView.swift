@@ -148,7 +148,11 @@ struct SettingsAndTestView: View {
                             .clipShape(Capsule())
                     }
 
-                    Text("Lắng nghe trực tiếp sự kiện mở/kéo hộp thoại Save/Open qua AXObserver (0% CPU khi nghỉ) và chuyển thư mục tức thì.")
+                    Text(
+                        detector.isAccessibilityTrusted
+                            ? "Chỉ kích hoạt chính xác trên hộp thoại Save/Open thực sự (bỏ qua hoàn toàn các cửa sổ Cài đặt/In/Sheet thông thường) với 0% CPU khi nghỉ."
+                            : "Cần bật để nhận diện chính xác hộp thoại Save/Open. (Mẹo: Nếu vừa Update mà công tắc trong System Settings đã bật sẵn, hãy Tắt rồi Bật lại công tắc QuickFolder)."
+                    )
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

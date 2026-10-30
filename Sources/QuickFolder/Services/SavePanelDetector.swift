@@ -274,7 +274,35 @@ final class SavePanelDetector: ObservableObject {
         }
     }
 
-    // MARK: - Background Thread Detection (Zero Main-Thread Blocking)
+    // MARK: - Background Thread Detection (Zero Main-Thread Blocking & Zero False Positives)
+
+    nonisolated private static let officialPanelIdentifiers: Set<String> = [
+        "save-panel",
+        "open-panel",
+        "nssavepanel",
+        "nsopenpanel"
+    ]
+
+    nonisolated private static let rejectedDialogKeywords: [String] = [
+        "cài đặt",
+        "settings",
+        "preferences",
+        "tuỳ chỉnh",
+        "tùy chỉnh",
+        "print",
+        "page setup",
+        "about ",
+        "giới thiệu",
+        "kiểm tra cập nhật",
+        "software update",
+        "sign in",
+        "đăng nhập"
+    ]
+
+    nonisolated private static func isOfficialSaveOpenIdentifier(_ raw: String) -> Bool {
+        let lower = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return officialPanelIdentifiers.contains(lower)
+    }
 
     nonisolated private static func performBackgroundDetection(
         myPID: pid_t,
@@ -285,113 +313,96 @@ final class SavePanelDetector: ObservableObject {
         bundleByPID: [pid_t: String],
         excludedKeys: Set<String>
     ) -> DetectedSavePanel? {
+        // Never guess from window geometry without Accessibility: prevents all false positives on normal sheets/modals
+        guard trusted, let frontPID else {
+            return nil
+        }
+
+        let frontBundle = bundleByPID[frontPID]
+        if frontBundle == "com.apple.finder" {
+            return nil
+        }
+
+        // Determine the single active target app PID (either frontmost app, or previous app while interacting with QuickFolder / openAndSavePanelService)
+        let targetPID: pid_t
+        if frontPID == myPID || frontBundle == "com.apple.appkit.xpc.openAndSavePanelService" {
+            guard let prevPID,
+                  prevPID != myPID,
+                  bundleByPID[prevPID] != "com.apple.finder" else {
+                return nil
+            }
+            targetPID = prevPID
+        } else {
+            targetPID = frontPID
+        }
+
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
 
-        // Collect on-screen layer-0 windows and PIDs in front-to-back order
-        var orderedPIDs: [pid_t] = []
-        var seenPIDs: Set<pid_t> = [myPID]
-        var windowsByPID: [pid_t: [CGRect]] = [:]
-        var ownerNameByPID: [pid_t: String] = [:]
-
-        if let frontPID, !seenPIDs.contains(frontPID) {
-            orderedPIDs.append(frontPID)
-            seenPIDs.insert(frontPID)
-        }
-        if let prevPID, !seenPIDs.contains(prevPID) {
-            orderedPIDs.append(prevPID)
-            seenPIDs.insert(prevPID)
-        }
+        var onScreenRects: [CGRect] = []
+        var appName: String?
 
         for entry in windowList {
             guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
                   let pid = entry[kCGWindowOwnerPID as String] as? pid_t,
-                  pid != myPID else {
+                  pid == targetPID else {
                 continue
             }
-            if let name = entry[kCGWindowOwnerName as String] as? String, ownerNameByPID[pid] == nil {
-                ownerNameByPID[pid] = name
+            if appName == nil, let name = entry[kCGWindowOwnerName as String] as? String {
+                appName = name
             }
             if let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
                let cgRect = CGRect(dictionaryRepresentation: boundsDict),
-               cgRect.width >= 380, cgRect.height >= 200 {
-                windowsByPID[pid, default: []].append(cgRect)
-                if !seenPIDs.contains(pid) {
-                    seenPIDs.insert(pid)
-                    orderedPIDs.append(pid)
-                }
+               cgRect.width >= 280, cgRect.height >= 130 {
+                onScreenRects.append(cgRect)
             }
         }
 
-        // Only inspect the top 4 candidate apps (excluding user-excluded apps)
-        let candidatePIDs = orderedPIDs.filter { pid in
-            let bID = bundleByPID[pid]
-            let name = ownerNameByPID[pid] ?? "App"
-            if let bID, excludedKeys.contains(bID) { return false }
-            if excludedKeys.contains(name) { return false }
-            return true
-        }.prefix(4)
-
-        // Method A: Fast Accessibility inspection (only checks AXSheet or AXDialog windows, never traverses standard windows!)
-        if trusted {
-            for pid in candidatePIDs {
-                let appName = ownerNameByPID[pid] ?? "App"
-                let bundleID = bundleByPID[pid]
-                if let detected = inspectPIDForSavePanelAX(
-                    pid: pid,
-                    appName: appName,
-                    bundleID: bundleID,
-                    primaryScreenHeight: primaryScreenHeight
-                ) {
-                    return detected
-                }
-            }
+        // Target app must currently have at least one visible window on screen
+        guard !onScreenRects.isEmpty else {
+            return nil
         }
 
-        // Method B: WindowServer geometry fallback for Save/Open sheets
-        for pid in candidatePIDs {
-            guard let rects = windowsByPID[pid], rects.count >= 2 else { continue }
-            let frontRect = rects[0]
-            let parentRect = rects[1]
-
-            let isSheetSized = frontRect.width >= 500 && frontRect.width <= 1150 &&
-                               frontRect.height >= 320 && frontRect.height <= 820 &&
-                               frontRect.width < parentRect.width &&
-                               frontRect.height < parentRect.height
-            let horizontalCenterDiff = abs(frontRect.midX - parentRect.midX)
-
-            if isSheetSized && horizontalCenterDiff <= 40 && parentRect.intersects(frontRect) {
-                let cocoaFrame = convertQuartzToCocoa(frontRect, primaryScreenHeight: primaryScreenHeight)
-                return DetectedSavePanel(
-                    appPID: pid,
-                    appName: ownerNameByPID[pid] ?? "App",
-                    appBundleID: bundleByPID[pid],
-                    cocoaFrame: cocoaFrame,
-                    isSheet: true
-                )
-            }
+        let resolvedName = appName ?? "App"
+        let bundleID = bundleByPID[targetPID]
+        if let bundleID, excludedKeys.contains(bundleID) {
+            return nil
+        }
+        if excludedKeys.contains(resolvedName) {
+            return nil
         }
 
-        return nil
+        return inspectPIDForSavePanelAX(
+            pid: targetPID,
+            appName: resolvedName,
+            bundleID: bundleID,
+            onScreenQuartzRects: onScreenRects,
+            primaryScreenHeight: primaryScreenHeight
+        )
     }
 
     nonisolated private static func inspectPIDForSavePanelAX(
         pid: pid_t,
         appName: String,
         bundleID: String?,
+        onScreenQuartzRects: [CGRect],
         primaryScreenHeight: CGFloat
     ) -> DetectedSavePanel? {
         let appElement = AXUIElementCreateApplication(pid)
-        // Set a strict 40ms messaging timeout so slow/busy apps never stall our background worker
-        AXUIElementSetMessagingTimeout(appElement, 0.04)
+        // Strict 50ms messaging timeout so slow/busy apps never stall our background worker
+        AXUIElementSetMessagingTimeout(appElement, 0.05)
 
         var candidateWindows: [AXUIElement] = []
         if let focusedWin = copyAXElement(appElement, attribute: kAXFocusedWindowAttribute) {
             candidateWindows.append(focusedWin)
         }
+        if let mainWin = copyAXElement(appElement, attribute: kAXMainWindowAttribute),
+           !candidateWindows.contains(where: { CFEqual($0, mainWin) }) {
+            candidateWindows.append(mainWin)
+        }
         if let allWins = copyAXElements(appElement, attribute: kAXWindowsAttribute) {
-            for win in allWins.prefix(4) {
+            for win in allWins.prefix(6) {
                 if !candidateWindows.contains(where: { CFEqual($0, win) }) {
                     candidateWindows.append(win)
                 }
@@ -399,24 +410,27 @@ final class SavePanelDetector: ObservableObject {
         }
 
         for window in candidateWindows {
-            // 1. Check if window itself has AXIdentifier "save-panel" or "open-panel"
-            let winID = (copyString(window, attribute: "AXIdentifier") ?? "").lowercased()
-            if winID == "save-panel" || winID == "open-panel" || winID == "nssavepanel" || winID == "nsopenpanel" {
-                if let cocoaRect = getCocoaFrame(of: window, primaryScreenHeight: primaryScreenHeight) {
+            // 1. Official AppKit NSSavePanel / NSOpenPanel identifier directly on the window/sheet
+            let winID = copyString(window, attribute: "AXIdentifier") ?? ""
+            if isOfficialSaveOpenIdentifier(winID) {
+                if let (quartzRect, cocoaRect) = getFrames(of: window, primaryScreenHeight: primaryScreenHeight),
+                   isRectOnScreen(quartzRect, candidates: onScreenQuartzRects) {
+                    let role = copyString(window, attribute: kAXRoleAttribute) ?? ""
                     return DetectedSavePanel(
                         appPID: pid,
                         appName: appName,
                         appBundleID: bundleID,
                         cocoaFrame: cocoaRect,
-                        isSheet: false
+                        isSheet: role == "AXSheet"
                     )
                 }
             }
 
-            // 2. Check immediate AXSheets or direct AXSheet children of this window (O(1) depth)
+            // 2. Attached Save/Open AXSheet inside this window (ignores generic SwiftUI/Settings/Print sheets!)
             if let sheet = findDirectSaveOrOpenSheet(in: window) {
-                if let cocoaRect = getCocoaFrame(of: sheet, primaryScreenHeight: primaryScreenHeight) ??
-                                   getCocoaFrame(of: window, primaryScreenHeight: primaryScreenHeight) {
+                if let (quartzRect, cocoaRect) = getFrames(of: sheet, primaryScreenHeight: primaryScreenHeight) ??
+                                                 getFrames(of: window, primaryScreenHeight: primaryScreenHeight),
+                   isRectOnScreen(quartzRect, candidates: onScreenQuartzRects) {
                     return DetectedSavePanel(
                         appPID: pid,
                         appName: appName,
@@ -427,25 +441,33 @@ final class SavePanelDetector: ObservableObject {
                 }
             }
 
-            // 3. Only if the window is a modal dialog (AXDialog / AXSystemDialog, NOT AXStandardWindow),
-            // check its shallow controls
+            // 3. Standalone modal dialog from custom frameworks (Qt/Java/Office custom dialogs)
             let subrole = copyString(window, attribute: kAXSubroleAttribute) ?? ""
             if subrole == "AXDialog" || subrole == "AXSystemDialog" {
-                if isDialogConfirmedSaveOrOpen(window) {
-                    if let cocoaRect = getCocoaFrame(of: window, primaryScreenHeight: primaryScreenHeight) {
-                        return DetectedSavePanel(
-                            appPID: pid,
-                            appName: appName,
-                            appBundleID: bundleID,
-                            cocoaFrame: cocoaRect,
-                            isSheet: false
-                        )
-                    }
+                if isDialogConfirmedSaveOrOpen(window),
+                   let (quartzRect, cocoaRect) = getFrames(of: window, primaryScreenHeight: primaryScreenHeight),
+                   isRectOnScreen(quartzRect, candidates: onScreenQuartzRects) {
+                    return DetectedSavePanel(
+                        appPID: pid,
+                        appName: appName,
+                        appBundleID: bundleID,
+                        cocoaFrame: cocoaRect,
+                        isSheet: false
+                    )
                 }
             }
         }
 
         return nil
+    }
+
+    nonisolated private static func isRectOnScreen(_ rect: CGRect, candidates: [CGRect]) -> Bool {
+        for c in candidates {
+            if c.insetBy(dx: -24, dy: -24).intersects(rect) {
+                return true
+            }
+        }
+        return false
     }
 
     nonisolated private static func findDirectSaveOrOpenSheet(in window: AXUIElement) -> AXUIElement? {
@@ -460,12 +482,26 @@ final class SavePanelDetector: ObservableObject {
         if let children = copyAXElements(window, attribute: kAXChildrenAttribute) {
             for child in children.prefix(20) {
                 let role = copyString(child, attribute: kAXRoleAttribute) ?? ""
-                let ident = (copyString(child, attribute: "AXIdentifier") ?? "").lowercased()
-                if ident == "save-panel" || ident == "open-panel" {
+                let ident = copyString(child, attribute: "AXIdentifier") ?? ""
+                if isOfficialSaveOpenIdentifier(ident) {
                     return child
                 }
                 if role == "AXSheet" && isSheetConfirmedSaveOrOpen(child) {
                     return child
+                }
+                // Check 1 level inside container groups in case a sheet is wrapped
+                if role == "AXGroup" || role == "AXSplitGroup",
+                   let subChildren = copyAXElements(child, attribute: kAXChildrenAttribute) {
+                    for sub in subChildren.prefix(12) {
+                        let subRole = copyString(sub, attribute: kAXRoleAttribute) ?? ""
+                        let subIdent = copyString(sub, attribute: "AXIdentifier") ?? ""
+                        if isOfficialSaveOpenIdentifier(subIdent) {
+                            return sub
+                        }
+                        if subRole == "AXSheet" && isSheetConfirmedSaveOrOpen(sub) {
+                            return sub
+                        }
+                    }
                 }
             }
         }
@@ -474,56 +510,95 @@ final class SavePanelDetector: ObservableObject {
     }
 
     nonisolated private static func isSheetConfirmedSaveOrOpen(_ sheet: AXUIElement) -> Bool {
-        let ident = (copyString(sheet, attribute: "AXIdentifier") ?? "").lowercased()
-        if ident == "save-panel" || ident == "open-panel" || ident == "nssavepanel" || ident == "nsopenpanel" {
+        let ident = copyString(sheet, attribute: "AXIdentifier") ?? ""
+        if isOfficialSaveOpenIdentifier(ident) {
             return true
         }
         return isDialogConfirmedSaveOrOpen(sheet)
     }
 
     nonisolated private static func isDialogConfirmedSaveOrOpen(_ dialog: AXUIElement) -> Bool {
-        let ident = (copyString(dialog, attribute: "AXIdentifier") ?? "").lowercased()
-        if ident == "save-panel" || ident == "open-panel" || ident == "nssavepanel" || ident == "nsopenpanel" {
+        let ident = copyString(dialog, attribute: "AXIdentifier") ?? ""
+        if isOfficialSaveOpenIdentifier(ident) {
             return true
         }
 
-        // Shallow inspection (max 35 elements, depth <= 3)
+        let dialogTitle = (copyString(dialog, attribute: kAXTitleAttribute) ?? "").lowercased()
+        if !dialogTitle.isEmpty && rejectedDialogKeywords.contains(where: { dialogTitle.contains($0) }) {
+            return false
+        }
+
+        // Shallow inspection (max 45 elements, depth <= 4) requiring genuine file-picker controls
         var queue: [(AXUIElement, Int)] = [(dialog, 0)]
         var visited = 0
-        let maxVisited = 35
-        let maxDepth = 3
+        let maxVisited = 45
+        let maxDepth = 4
 
-        var hasOK = false
-        var hasCancel = false
-        var hasBrowserControl = false
+        var hasFileActionButton = false
+        var hasCancelButton = false
+        var hasColumnBrowser = false
+        var hasNewFolderButton = false
+        var hasFileFieldLabel = false
+
+        let fileActionTitles: Set<String> = [
+            "save", "open", "choose", "choose folder", "export", "import", "upload", "select",
+            "lưu", "mở", "chọn", "chọn thư mục", "xuất", "nhập", "tải lên"
+        ]
+        let cancelTitles: Set<String> = ["cancel", "huỷ", "hủy", "bỏ qua"]
+        let newFolderTitles: Set<String> = [
+            "new folder", "new folder…", "new folder...",
+            "thư mục mới", "thư mục mới…", "thư mục mới...",
+            "create folder", "tạo thư mục"
+        ]
+        let fileFieldLabels: Set<String> = [
+            "save as:", "save as", "where:", "export as:", "file name:",
+            "lưu thành:", "lưu dưới dạng:", "vị trí:", "tên tệp:", "tên file:"
+        ]
 
         while !queue.isEmpty && visited < maxVisited {
             let (elem, depth) = queue.removeFirst()
             visited += 1
 
             let eid = (copyString(elem, attribute: "AXIdentifier") ?? "").lowercased()
-            if eid == "save-panel" || eid == "open-panel" || eid == "saveasnametextfield" || eid == "cmd_new_folder" || eid.contains("finderkit") {
+            if isOfficialSaveOpenIdentifier(eid) ||
+               eid == "saveasnametextfield" ||
+               eid == "cmd_new_folder" ||
+               eid == "nsnavsidebar" ||
+               eid.contains("finderkit") {
                 return true
             }
-            if eid == "okbutton" { hasOK = true }
-            if eid == "cancelbutton" { hasCancel = true }
+            if eid == "cancelbutton" {
+                hasCancelButton = true
+            }
 
             let role = copyString(elem, attribute: kAXRoleAttribute) ?? ""
-            if role == "AXSplitGroup" || role == "AXBrowser" || role == "AXOutline" || role == "AXPopUpButton" {
-                hasBrowserControl = true
+            if role == "AXBrowser" {
+                hasColumnBrowser = true
             } else if role == "AXButton" {
-                let title = (copyString(elem, attribute: kAXTitleAttribute) ?? "").lowercased()
-                if title == "new folder" || title == "thư mục mới" {
-                    return true
+                let title = (copyString(elem, attribute: kAXTitleAttribute) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                if newFolderTitles.contains(title) {
+                    hasNewFolderButton = true
+                } else if fileActionTitles.contains(title) {
+                    hasFileActionButton = true
+                } else if cancelTitles.contains(title) {
+                    hasCancelButton = true
                 }
-                if ["save", "open", "choose", "export", "import", "lưu", "mở", "chọn"].contains(title) {
-                    hasOK = true
-                } else if ["cancel", "huỷ", "hủy"].contains(title) {
-                    hasCancel = true
+            } else if role == "AXStaticText" {
+                let rawText = copyString(elem, attribute: kAXValueAttribute)
+                    ?? copyString(elem, attribute: kAXTitleAttribute)
+                    ?? ""
+                let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if depth <= 2 && !text.isEmpty && rejectedDialogKeywords.contains(where: { text.hasPrefix($0) }) {
+                    return false
+                }
+                if fileFieldLabels.contains(text) {
+                    hasFileFieldLabel = true
                 }
             }
 
-            if hasOK && hasCancel && hasBrowserControl {
+            if hasFileActionButton && hasCancelButton && (hasColumnBrowser || hasNewFolderButton || hasFileFieldLabel) {
                 return true
             }
 
@@ -539,7 +614,7 @@ final class SavePanelDetector: ObservableObject {
 
     // MARK: - Coordinate Conversion (Quartz Top-Left -> AppKit Bottom-Left)
 
-    nonisolated private static func getCocoaFrame(of element: AXUIElement, primaryScreenHeight: CGFloat) -> NSRect? {
+    nonisolated private static func getFrames(of element: AXUIElement, primaryScreenHeight: CGFloat) -> (CGRect, NSRect)? {
         var posRef: CFTypeRef?
         var sizeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
@@ -553,11 +628,12 @@ final class SavePanelDetector: ObservableObject {
         var cgSize = CGSize.zero
         guard AXValueGetValue(posVal as! AXValue, .cgPoint, &cgPoint),
               AXValueGetValue(sizeVal as! AXValue, .cgSize, &cgSize),
-              cgSize.width > 100, cgSize.height > 100 else {
+              cgSize.width >= 260, cgSize.height >= 120 else {
             return nil
         }
 
-        return convertQuartzToCocoa(CGRect(origin: cgPoint, size: cgSize), primaryScreenHeight: primaryScreenHeight)
+        let quartzRect = CGRect(origin: cgPoint, size: cgSize)
+        return (quartzRect, convertQuartzToCocoa(quartzRect, primaryScreenHeight: primaryScreenHeight))
     }
 
     nonisolated private static func convertQuartzToCocoa(_ cgRect: CGRect, primaryScreenHeight: CGFloat) -> NSRect {
