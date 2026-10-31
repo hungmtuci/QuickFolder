@@ -319,13 +319,12 @@ final class SavePanelDetector: ObservableObject {
         }
 
         let frontBundle = bundleByPID[frontPID]
-        if frontBundle == "com.apple.finder" {
-            return nil
-        }
 
-        // Determine the single active target app PID (either frontmost app, or previous app while interacting with QuickFolder / openAndSavePanelService)
+        // Determine the single active target app PID:
+        // Either frontmost app, OR if the user is interacting with QuickFolder, openAndSavePanelService, or Finder,
+        // retain the previous app if its Save/Open dialog is still active and visible on screen.
         let targetPID: pid_t
-        if frontPID == myPID || frontBundle == "com.apple.appkit.xpc.openAndSavePanelService" {
+        if frontPID == myPID || frontBundle == "com.apple.appkit.xpc.openAndSavePanelService" || frontBundle == "com.apple.finder" {
             guard let prevPID,
                   prevPID != myPID,
                   bundleByPID[prevPID] != "com.apple.finder" else {

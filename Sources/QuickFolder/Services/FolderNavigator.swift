@@ -77,9 +77,23 @@ final class FolderNavigator: ObservableObject {
             let detectedFrame = detector.activePanel?.cocoaFrame
             Self.focusTargetAppSaveWindow(pid: targetPID, expectedFrame: detectedFrame)
 
-            try? await Task.sleep(nanoseconds: 90_000_000) // 90ms focus handoff
+            try? await Task.sleep(nanoseconds: 120_000_000) // 120ms focus handoff
 
-            // 2. Put target path into pasteboard atomically (saving previous clipboard content, including images/rich text)
+            // 2. Tier 1: Try instant direct sidebar click (0ms native click, no clipboard, no key simulation)
+            let sidebarHandled = await Task.detached(priority: .userInitiated) {
+                Self.trySelectSidebarFolderDirectly(pid: targetPID, folderPath: folderPath)
+            }.value
+
+            if sidebarHandled {
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                self.showBanner("✓ Đã chuyển tới “\(folderName)”")
+                detector.isNavigatingFolder = false
+                detector.pollNow()
+                return
+            }
+
+            // 3. Tier 2: Safe Go-To-Folder (Cmd + Shift + G)
+            // Save clipboard content atomically
             let pasteboard = NSPasteboard.general
             var savedItems: [[(NSPasteboard.PasteboardType, Data)]] = []
             if let items = pasteboard.pasteboardItems {
@@ -101,42 +115,55 @@ final class FolderNavigator: ObservableObject {
             // Step 1: Send Cmd + Shift + G ("Go to Folder...")
             Self.postKeyStroke(keyCode: 5, flags: [.maskCommand, .maskShift]) // 'g' = 5
 
-            // Allow 220ms for the macOS Go-To-Folder sheet to slide in and gain text field focus
-            try? await Task.sleep(nanoseconds: 220_000_000)
+            // Step 2: Strictly verify GoTo sheet / PathTextField appeared before sending ANY confirm keystrokes
+            var isGoToOpen = false
+            for _ in 0..<16 { // Poll up to 400ms (16 x 25ms)
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                let visible = await Task.detached(priority: .userInitiated) {
+                    Self.isGoToWindowVisible(pid: targetPID)
+                }.value
+                if visible {
+                    isGoToOpen = true
+                    break
+                }
+            }
 
-            // Step 2: Send Cmd + A (Select All) then Cmd + V (Paste full path from clipboard)
-            // This is 100% reliable for all Unicode/Vietnamese diacritics and long Google Drive paths
+            // CRITICAL SAFETY CHECK: NEVER SEND RETURN IF GO-TO SHEET IS NOT OPEN!
+            // Prevents accidentally pressing the default "Save" button on the main dialog!
+            guard isGoToOpen else {
+                Self.restorePasteboard(savedItems)
+                self.showBanner("⚠️ Không thể mở Go To Folder trên ứng dụng này")
+                detector.isNavigatingFolder = false
+                detector.pollNow()
+                return
+            }
+
+            // Step 3: GoTo sheet is confirmed open. Send Cmd + A (Select All) then Cmd + V (Paste path)
             Self.postKeyStroke(keyCode: 0, flags: [.maskCommand]) // 'a' = 0
             try? await Task.sleep(nanoseconds: 35_000_000)
             Self.postKeyStroke(keyCode: 9, flags: [.maskCommand]) // 'v' = 9
 
-            try? await Task.sleep(nanoseconds: 80_000_000) // 80ms for path resolution
+            try? await Task.sleep(nanoseconds: 120_000_000) // 120ms for path resolution
 
-            // Step 3: Send Return (36) to confirm and jump into folder
+            // Step 4: Send plain Return (36) with flags = [] to navigate
             Self.postKeyStroke(keyCode: 36, flags: []) // Return = 36
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            Self.postKeyStroke(keyCode: 36, flags: []) // Second Return in case of autocomplete confirmation
+            try? await Task.sleep(nanoseconds: 150_000_000)
 
-            // Step 4: Restore user's previous clipboard after navigation completes
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                if !savedItems.isEmpty {
-                    pasteboard.clearContents()
-                    var writeItems: [NSPasteboardItem] = []
-                    for entry in savedItems {
-                        let newItem = NSPasteboardItem()
-                        for (t, d) in entry {
-                            newItem.setData(d, forType: t)
-                        }
-                        writeItems.append(newItem)
-                    }
-                    pasteboard.writeObjects(writeItems)
-                }
+            // If autocomplete sheet is still visible, send second plain Return to confirm
+            let stillOpen = await Task.detached(priority: .userInitiated) {
+                Self.isGoToWindowVisible(pid: targetPID)
+            }.value
+            if stillOpen {
+                Self.postKeyStroke(keyCode: 36, flags: [])
+                try? await Task.sleep(nanoseconds: 150_000_000)
             }
+
+            // Step 5: Restore user's previous clipboard after navigation completes
+            Self.restorePasteboard(savedItems)
 
             self.showBanner("✓ Đã chuyển tới “\(folderName)”")
 
-            // Step 5: Auto-scroll ColumnView (AXBrowser) horizontal scrollbar to 1.0 (rightmost column)
+            // Step 6: Auto-scroll ColumnView (AXBrowser) horizontal scrollbar to 1.0 (rightmost column)
             for delayNs in [90_000_000 as UInt64, 120_000_000 as UInt64, 180_000_000 as UInt64] {
                 try? await Task.sleep(nanoseconds: delayNs)
                 await Task.detached(priority: .userInitiated) {
@@ -146,6 +173,23 @@ final class FolderNavigator: ObservableObject {
 
             detector.isNavigatingFolder = false
             detector.pollNow()
+        }
+    }
+
+    private static func restorePasteboard(_ savedItems: [[(NSPasteboard.PasteboardType, Data)]]) {
+        guard !savedItems.isEmpty else { return }
+        Task { @MainActor in
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            var writeItems: [NSPasteboardItem] = []
+            for entry in savedItems {
+                let newItem = NSPasteboardItem()
+                for (t, d) in entry {
+                    newItem.setData(d, forType: t)
+                }
+                writeItems.append(newItem)
+            }
+            pasteboard.writeObjects(writeItems)
         }
     }
 
@@ -234,11 +278,52 @@ final class FolderNavigator: ObservableObject {
         return NSRect(x: pos.x, y: primaryScreenHeight - pos.y - size.height, width: size.width, height: size.height)
     }
 
+    // MARK: - Safety Check for GoTo Sheet
+
+    nonisolated private static func isGoToWindowVisible(pid: pid_t) -> Bool {
+        for root in findSaveDialogRoots(pid: pid) {
+            if hasGoToChild(in: root, depth: 0) {
+                return true
+            }
+        }
+        return false
+    }
+
+    nonisolated private static func hasGoToChild(in element: AXUIElement, depth: Int) -> Bool {
+        guard depth <= 8 else { return false }
+        AXUIElementSetMessagingTimeout(element, 0.04)
+
+        var idRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, "AXIdentifier" as CFString, &idRef) == .success,
+           let id = idRef as? String {
+            if id == "PathTextField" || id == "GoToWindow" {
+                return true
+            }
+        }
+
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else {
+            return false
+        }
+
+        for child in children {
+            if hasGoToChild(in: child, depth: depth + 1) {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Instant 0ms sidebar selection: If `folderPath` is one of the standard macOS user folders present in the
-    /// Save/Open dialog's left sidebar (`AXOutline` -> `AXRow`), selects that row directly via Accessibility without opening Cmd+Shift+G.
+    /// Save/Open dialog's left sidebar (`AXOutline` -> `AXRow`), clicks that row directly via CGEvent without opening Cmd+Shift+G.
     nonisolated private static func trySelectSidebarFolderDirectly(pid: pid_t, folderPath: String) -> Bool {
         let standardized = (folderPath as NSString).standardizingPath
         let home = (NSHomeDirectory() as NSString).standardizingPath
+
+        var targetLabels: Set<String> = [
+            (folderPath as NSString).lastPathComponent
+        ]
 
         let standardPathLabels: [String: Set<String>] = [
             (home as NSString).appendingPathComponent("Desktop"): ["Desktop", "Màn hình nền"],
@@ -248,19 +333,124 @@ final class FolderNavigator: ObservableObject {
             (home as NSString).appendingPathComponent("Pictures"): ["Pictures", "Hình ảnh"],
             (home as NSString).appendingPathComponent("Movies"): ["Movies", "Phim"],
             (home as NSString).appendingPathComponent("Music"): ["Music", "Nhạc"],
-            home: [NSUserName()]
+            home: [NSUserName(), URL(fileURLWithPath: home).lastPathComponent]
         ]
 
-        guard let targetLabels = standardPathLabels[standardized] else {
-            return false
+        if let std = standardPathLabels[standardized] {
+            targetLabels.formUnion(std)
+        }
+        if standardized.contains("GoogleDrive") || standardized.contains("Google Drive") {
+            targetLabels.insert("Google Drive")
+        }
+        if standardized.contains("OneDrive") {
+            targetLabels.insert("OneDrive")
+        }
+        if standardized.contains("Dropbox") {
+            targetLabels.insert("Dropbox")
+        }
+        if standardized.contains("Mobile Documents") {
+            targetLabels.insert("iCloud Drive")
         }
 
         for root in findSaveDialogRoots(pid: pid) {
-            if selectMatchingSidebarRow(in: root, targetLabels: targetLabels, depth: 0) {
+            if clickMatchingSidebarRow(in: root, targetLabels: targetLabels, depth: 0) {
                 return true
             }
         }
         return false
+    }
+
+    nonisolated private static func clickMatchingSidebarRow(in element: AXUIElement, targetLabels: Set<String>, depth: Int) -> Bool {
+        guard depth <= 7 else { return false }
+        AXUIElementSetMessagingTimeout(element, 0.04)
+
+        var roleRef: CFTypeRef?
+        let role = (AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success)
+            ? (roleRef as? String ?? "") : ""
+
+        if role == "AXOutline" {
+            var rowsRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &rowsRef) == .success,
+               let rows = rowsRef as? [AXUIElement] {
+                for row in rows {
+                    AXUIElementSetMessagingTimeout(row, 0.04)
+                    if let (label, textEl) = extractRowStaticTextElement(row), targetLabels.contains(label) {
+                        if let center = extractElementCenter(textEl) ?? extractElementCenter(row) {
+                            clickAtPoint(center)
+                            return true
+                        }
+                    }
+                }
+            }
+            return false
+        }
+
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else {
+            return false
+        }
+
+        for child in children.prefix(25) {
+            if clickMatchingSidebarRow(in: child, targetLabels: targetLabels, depth: depth + 1) {
+                return true
+            }
+        }
+        return false
+    }
+
+    nonisolated private static func extractRowStaticTextElement(_ row: AXUIElement) -> (String, AXUIElement)? {
+        var cellsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(row, kAXChildrenAttribute as CFString, &cellsRef) == .success,
+              let cells = cellsRef as? [AXUIElement] else {
+            return nil
+        }
+        for cell in cells {
+            AXUIElementSetMessagingTimeout(cell, 0.04)
+            var subRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(cell, kAXChildrenAttribute as CFString, &subRef) == .success,
+               let subs = subRef as? [AXUIElement] {
+                for sub in subs {
+                    AXUIElementSetMessagingTimeout(sub, 0.04)
+                    var roleRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(sub, kAXRoleAttribute as CFString, &roleRef) == .success,
+                       (roleRef as? String) == "AXStaticText" {
+                        var valRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(sub, kAXValueAttribute as CFString, &valRef) == .success,
+                           let text = valRef as? String, !text.isEmpty {
+                            return (text, sub)
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func extractElementCenter(_ element: AXUIElement) -> CGPoint? {
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success else {
+            return nil
+        }
+        var pos = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(posRef as! AXValue, .cgPoint, &pos),
+              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size),
+              size.width > 0, size.height > 0 else {
+            return nil
+        }
+        return CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
+    }
+
+    nonisolated private static func clickAtPoint(_ center: CGPoint) {
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: center, mouseButton: .left)
+        let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: center, mouseButton: .left)
+        down?.post(tap: .cghidEventTap)
+        usleep(25_000)
+        up?.post(tap: .cghidEventTap)
     }
 
     nonisolated private static func findSaveDialogRoots(pid: pid_t) -> [AXUIElement] {
@@ -321,71 +511,7 @@ final class FolderNavigator: ObservableObject {
         return roots
     }
 
-    nonisolated private static func selectMatchingSidebarRow(in element: AXUIElement, targetLabels: Set<String>, depth: Int) -> Bool {
-        guard depth <= 7 else { return false }
-        AXUIElementSetMessagingTimeout(element, 0.04)
 
-        var roleRef: CFTypeRef?
-        let role = (AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success)
-            ? (roleRef as? String ?? "") : ""
-
-        if role == "AXOutline" {
-            var rowsRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &rowsRef) == .success,
-               let rows = rowsRef as? [AXUIElement] {
-                for row in rows {
-                    AXUIElementSetMessagingTimeout(row, 0.04)
-                    if let label = extractRowStaticText(row), targetLabels.contains(label) {
-                        if AXUIElementSetAttributeValue(row, kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success {
-                            return true
-                        }
-                    }
-                }
-            }
-            return false
-        }
-
-        var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement] else {
-            return false
-        }
-
-        for child in children.prefix(25) {
-            if selectMatchingSidebarRow(in: child, targetLabels: targetLabels, depth: depth + 1) {
-                return true
-            }
-        }
-        return false
-    }
-
-    nonisolated private static func extractRowStaticText(_ row: AXUIElement) -> String? {
-        var cellsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(row, kAXChildrenAttribute as CFString, &cellsRef) == .success,
-              let cells = cellsRef as? [AXUIElement] else {
-            return nil
-        }
-        for cell in cells {
-            AXUIElementSetMessagingTimeout(cell, 0.04)
-            var subRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(cell, kAXChildrenAttribute as CFString, &subRef) == .success,
-               let subs = subRef as? [AXUIElement] {
-                for sub in subs {
-                    AXUIElementSetMessagingTimeout(sub, 0.04)
-                    var roleRef: CFTypeRef?
-                    if AXUIElementCopyAttributeValue(sub, kAXRoleAttribute as CFString, &roleRef) == .success,
-                       (roleRef as? String) == "AXStaticText" {
-                        var valRef: CFTypeRef?
-                        if AXUIElementCopyAttributeValue(sub, kAXValueAttribute as CFString, &valRef) == .success,
-                           let text = valRef as? String, !text.isEmpty {
-                            return text
-                        }
-                    }
-                }
-            }
-        }
-        return nil
-    }
 
     /// Scrolls any ColumnView (`AXBrowser`) horizontal scrollbar inside the active Save/Open dialog to `1.0` (rightmost column),
     /// ensuring deeply nested target folders are immediately visible at the end without manual horizontal scrolling.
