@@ -25,7 +25,7 @@ final class UpdateChecker: ObservableObject {
     private var progressBar: NSProgressIndicator?
 
     var currentVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.3.5"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.3.6"
     }
 
     private init() {}

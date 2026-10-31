@@ -12,12 +12,12 @@
   <img src="docs/images/settings-dashboard.png" alt="Bảng điều khiển Cài đặt & Thử nghiệm QuickFolder" width="760" />
 </p>
 
-## ✨ Tính năng nổi bật (v1.3.5)
+## ✨ Tính năng nổi bật (v1.3.6)
 
-- **Cơ chế Điều hướng 2 Tầng Siêu An Toàn (Tuyệt đối không bao giờ bấm nhầm nút Save hay ghi đè file)**:
-  - **Tầng 1 (Direct Native Sidebar Click 0ms)**: Nhấp trực tiếp vào danh mục thanh bên (`Downloads`, `Desktop`, `Documents`, `Google Drive`, `OneDrive`, `Dropbox`, User Home, v.v.) qua tọa độ thực mà không cần mở Go-To sheet, không thay đổi clipboard và không mô phỏng phím gõ.
-  - **Tầng 2 (Safe Go-To-Folder với Kiểm tra Trợ năng Chặt chẽ)**: Gửi `Cmd+Shift+G` và **chỉ gửi phím Return xác nhận khi ô nhập đường dẫn `PathTextField` đã thực sự xuất hiện trên màn hình**. Nếu sheet không xuất hiện (do bị chặn hoặc ứng dụng đặc biệt), ứng dụng lập tức hủy an toàn — **tuyệt đối không bao giờ gửi phím Return mù** gây lưu đè file.
-- **Duy trì nhận diện Hộp thoại Save/Open khi chuyển sang Finder**: Khi người dùng bấm vào cửa sổ Finder bất kỳ, QuickFolder vẫn duy trì ghi nhớ hộp thoại Save/Open đang mở ở ứng dụng trước (Safari, Antigravity, Pages...), cho phép bấm chọn thư mục Finder hoặc dùng Finder-Click để điều hướng ngay lập tức mà không bị mất hiệu ứng.
+- **Cơ chế Điều hướng 2 Tầng Siêu An Toàn & Chuẩn Xác (Không bị cuộn nhầm thanh bên)**:
+  - **Tầng 1 (Direct Native Sidebar Click 0ms)**: Bấm trực tiếp vào các mục thanh bên chỉ khi đường dẫn đích là thư mục gốc thực sự (`Downloads`, `Desktop`, `Documents`, `Google Drive` gốc, `OneDrive` gốc...). Xác thực chính xác `where popup` sau khi click để đảm bảo đúng vị trí.
+  - **Tầng 2 (Safe Go-To-Folder với Kiểm tra Trợ năng Chặt chẽ)**: Khi điều hướng vào thư mục con lồng sâu (như `02. ToChuc` trong Google Drive), ứng dụng đi thẳng qua `Cmd+Shift+G` và nhập đường dẫn đầy đủ, tuyệt đối không bấm nhầm vào ổ Google Drive gốc ở thanh bên làm cuộn thanh scroll sai lệch. Chỉ gửi phím Return xác nhận khi ô nhập đường dẫn `PathTextField` đã thực sự xuất hiện trên màn hình.
+- **Duy trì nhận diện Hộp thoại Save/Open khi chuyển sang Finder**: Khi người dùng bấm vào cửa sổ Finder bất kỳ, QuickFolder vẫn duy trì ghi nhớ hộp thoại Save/Open đang mở ở ứng dụng trước (Safari, Edge, Antigravity, Pages...), cho phép bấm chọn thư mục Finder hoặc dùng Finder-Click để điều hướng ngay lập tức mà không bị mất hiệu ứng.
 - **Bảo toàn 100% dữ liệu Clipboard khi điều hướng (Hình ảnh, Định dạng, File, Văn bản)**: Tự động sao lưu toàn diện mọi kiểu dữ liệu trong bộ nhớ tạm và khôi phục nguyên vẹn sau khi thao tác hoàn tất.
 - **Nhận diện đầy đủ 100% cửa sổ Finder đang mở (kể cả Google Drive & thư mục lồng sâu)**: Tự động bóc tách đường dẫn trực tiếp từ thanh Path Bar (`AXURL` fileID URL) của Finder.
 - **Tuỳ chọn “Khởi động cùng macOS” & “Bật bảng này khi khởi động”**: Tích hợp thanh tuỳ chọn nhanh ngay đầu cửa sổ điều khiển và trên Menu Bar để bạn chủ động chọn tự chạy cùng macOS, mở sẵn bảng điều khiển khi khởi động hoặc chạy ngầm hoàn toàn trên thanh Menu Bar.
@@ -43,8 +43,8 @@
 ## 📥 Tải về & Cài đặt nhanh (macOS 14.0+ Universal: Apple Silicon & Intel)
 
 1. Tải bộ cài mới nhất tại trang **[Releases](https://github.com/hungmtuci/QuickFolder/releases/latest)**:
-   - **`QuickFolder-Installer-v1.3.5.dmg`** *(Khuyên dùng)*
-   - Hoặc **`QuickFolder-v1.3.5-macOS.zip`**
+   - **`QuickFolder-Installer-v1.3.6.dmg`** *(Khuyên dùng)*
+   - Hoặc **`QuickFolder-v1.3.6-macOS.zip`**
 2. Mở file `.dmg`:
    - Kéo `QuickFolder.app` thả vào thư mục **`Applications`**, **HOẶC** nhấp chuột phải vào `Cai_Dat_QuickFolder.command` -> chọn **Open** để tự động cài đặt và gỡ cờ cách ly Gatekeeper.
 3. Nếu macOS báo ứng dụng chưa công chứng Apple Developer ID khi mở lần đầu trên máy mới, chạy lệnh sau trong Terminal:

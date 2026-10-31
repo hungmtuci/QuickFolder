@@ -77,9 +77,11 @@ final class FolderNavigator: ObservableObject {
             let detectedFrame = detector.activePanel?.cocoaFrame
             Self.focusTargetAppSaveWindow(pid: targetPID, expectedFrame: detectedFrame)
 
-            try? await Task.sleep(nanoseconds: 120_000_000) // 120ms focus handoff
+            try? await Task.sleep(nanoseconds: 160_000_000) // 160ms focus handoff
 
             // 2. Tier 1: Try instant direct sidebar click (0ms native click, no clipboard, no key simulation)
+            // Note: Only exact root system folders (Desktop, Documents, Downloads...) or cloud root volumes are matched.
+            // Subfolders (e.g. 02. ToChuc inside Google Drive) are never matched here and use Tier 2 below.
             let sidebarHandled = await Task.detached(priority: .userInitiated) {
                 Self.trySelectSidebarFolderDirectly(pid: targetPID, folderPath: folderPath)
             }.value
@@ -117,7 +119,7 @@ final class FolderNavigator: ObservableObject {
 
             // Step 2: Strictly verify GoTo sheet / PathTextField appeared before sending ANY confirm keystrokes
             var isGoToOpen = false
-            for _ in 0..<16 { // Poll up to 400ms (16 x 25ms)
+            for _ in 0..<20 { // Poll up to 500ms (20 x 25ms)
                 try? await Task.sleep(nanoseconds: 25_000_000)
                 let visible = await Task.detached(priority: .userInitiated) {
                     Self.isGoToWindowVisible(pid: targetPID)
@@ -317,47 +319,95 @@ final class FolderNavigator: ObservableObject {
 
     /// Instant 0ms sidebar selection: If `folderPath` is one of the standard macOS user folders present in the
     /// Save/Open dialog's left sidebar (`AXOutline` -> `AXRow`), clicks that row directly via CGEvent without opening Cmd+Shift+G.
+    /// Only exact root folders match. Deep subfolders (e.g. 02. ToChuc inside Google Drive) are excluded to prevent selecting parent volumes.
     nonisolated private static func trySelectSidebarFolderDirectly(pid: pid_t, folderPath: String) -> Bool {
         let standardized = (folderPath as NSString).standardizingPath
         let home = (NSHomeDirectory() as NSString).standardizingPath
 
-        var targetLabels: Set<String> = [
-            (folderPath as NSString).lastPathComponent
-        ]
-
+        // 1. Only standard system folder roots and user home are eligible for direct sidebar clicks
         let standardPathLabels: [String: Set<String>] = [
             (home as NSString).appendingPathComponent("Desktop"): ["Desktop", "Màn hình nền"],
             (home as NSString).appendingPathComponent("Documents"): ["Documents", "Tài liệu"],
             (home as NSString).appendingPathComponent("Downloads"): ["Downloads", "Tải về"],
             "/Applications": ["Applications", "Ứng dụng"],
+            (home as NSString).appendingPathComponent("Applications"): ["Applications", "Ứng dụng"],
             (home as NSString).appendingPathComponent("Pictures"): ["Pictures", "Hình ảnh"],
             (home as NSString).appendingPathComponent("Movies"): ["Movies", "Phim"],
             (home as NSString).appendingPathComponent("Music"): ["Music", "Nhạc"],
             home: [NSUserName(), URL(fileURLWithPath: home).lastPathComponent]
         ]
 
+        var targetLabels: Set<String> = []
         if let std = standardPathLabels[standardized] {
-            targetLabels.formUnion(std)
+            targetLabels = std
+        } else if isCloudDriveRoot(standardized, home: home) {
+            // ONLY if the target folder IS the root of a cloud drive (not a subfolder inside it!)
+            if standardized.contains("GoogleDrive") || standardized.contains("Google Drive") {
+                targetLabels.insert("Google Drive")
+            } else if standardized.contains("OneDrive") {
+                targetLabels.insert("OneDrive")
+            } else if standardized.contains("Dropbox") {
+                targetLabels.insert("Dropbox")
+            } else if standardized.contains("Mobile Documents") {
+                targetLabels.insert("iCloud Drive")
+            }
         }
-        if standardized.contains("GoogleDrive") || standardized.contains("Google Drive") {
-            targetLabels.insert("Google Drive")
-        }
-        if standardized.contains("OneDrive") {
-            targetLabels.insert("OneDrive")
-        }
-        if standardized.contains("Dropbox") {
-            targetLabels.insert("Dropbox")
-        }
-        if standardized.contains("Mobile Documents") {
-            targetLabels.insert("iCloud Drive")
+
+        // If targetLabels is empty, this is a custom or subfolder path (like 02. ToChuc).
+        // It must NOT click the sidebar; it must use Tier 2 (Safe Go-To-Folder)!
+        guard !targetLabels.isEmpty else {
+            return false
         }
 
         for root in findSaveDialogRoots(pid: pid) {
             if clickMatchingSidebarRow(in: root, targetLabels: targetLabels, depth: 0) {
-                return true
+                // Verify that where popup actually updated to match
+                usleep(90_000)
+                if let whereVal = extractWherePopupValue(in: root) {
+                    let cleaned = whereVal.replacingOccurrences(of: "\u{2068}", with: "").replacingOccurrences(of: "\u{2069}", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    for lbl in targetLabels {
+                        if cleaned.localizedCaseInsensitiveContains(lbl) || lbl.localizedCaseInsensitiveContains(cleaned) {
+                            return true
+                        }
+                    }
+                }
             }
         }
         return false
+    }
+
+    nonisolated private static func isCloudDriveRoot(_ path: String, home: String) -> Bool {
+        let last = (path as NSString).lastPathComponent.lowercased()
+        if last == "my drive" || last == "google drive" || last == "onedrive" || last == "dropbox" {
+            return true
+        }
+        let cloudStoragePrefix = (home as NSString).appendingPathComponent("Library/CloudStorage")
+        if (path as NSString).deletingLastPathComponent == cloudStoragePrefix {
+            return true
+        }
+        return false
+    }
+
+    nonisolated private static func extractWherePopupValue(in element: AXUIElement) -> String? {
+        var idRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, "AXIdentifier" as CFString, &idRef) == .success,
+           let id = idRef as? String, id == "where popup" {
+            var valRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valRef) == .success,
+               let val = valRef as? String {
+                return val
+            }
+        }
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for child in children {
+                if let found = extractWherePopupValue(in: child) {
+                    return found
+                }
+            }
+        }
+        return nil
     }
 
     nonisolated private static func clickMatchingSidebarRow(in element: AXUIElement, targetLabels: Set<String>, depth: Int) -> Bool {
