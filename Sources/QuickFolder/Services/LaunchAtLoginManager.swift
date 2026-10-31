@@ -100,7 +100,7 @@ final class LaunchAtLoginManager: ObservableObject {
 
         let plistDict: [String: Any] = [
             "Label": launchAgentLabel,
-            "ProgramArguments": [executablePath],
+            "ProgramArguments": [executablePath, "--startup"],
             "RunAtLoad": true,
             "ProcessType": "Interactive"
         ]

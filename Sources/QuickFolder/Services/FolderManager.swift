@@ -445,6 +445,13 @@ final class FolderManager: ObservableObject {
             "pictures": "\(home)/Pictures",
             "music": "\(home)/Music",
             "movies": "\(home)/Movies",
+            "màn hình nền": "\(home)/Desktop",
+            "tài liệu": "\(home)/Documents",
+            "tải về": "\(home)/Downloads",
+            "ứng dụng": "/Applications",
+            "hình ảnh": "\(home)/Pictures",
+            "nhạc": "\(home)/Music",
+            "phim": "\(home)/Movies",
             URL(fileURLWithPath: home).lastPathComponent.lowercased(): home
         ]
 

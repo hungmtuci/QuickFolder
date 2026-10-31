@@ -74,13 +74,27 @@ final class FolderNavigator: ObservableObject {
                 }
                 app.activate(options: [.activateAllWindows])
             }
-            Self.focusTargetAppSaveWindow(pid: targetPID)
+            let detectedFrame = detector.activePanel?.cocoaFrame
+            Self.focusTargetAppSaveWindow(pid: targetPID, expectedFrame: detectedFrame)
 
             try? await Task.sleep(nanoseconds: 90_000_000) // 90ms focus handoff
 
-            // 2. Put target path into pasteboard atomically (saving previous clipboard content)
+            // 2. Put target path into pasteboard atomically (saving previous clipboard content, including images/rich text)
             let pasteboard = NSPasteboard.general
-            let previousString = pasteboard.string(forType: .string)
+            var savedItems: [[(NSPasteboard.PasteboardType, Data)]] = []
+            if let items = pasteboard.pasteboardItems {
+                for item in items {
+                    var entry: [(NSPasteboard.PasteboardType, Data)] = []
+                    for t in item.types {
+                        if let d = item.data(forType: t) {
+                            entry.append((t, d))
+                        }
+                    }
+                    if !entry.isEmpty {
+                        savedItems.append(entry)
+                    }
+                }
+            }
             pasteboard.clearContents()
             pasteboard.setString(folderPath, forType: .string)
 
@@ -106,9 +120,17 @@ final class FolderNavigator: ObservableObject {
             // Step 4: Restore user's previous clipboard after navigation completes
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                if let prev = previousString {
+                if !savedItems.isEmpty {
                     pasteboard.clearContents()
-                    pasteboard.setString(prev, forType: .string)
+                    var writeItems: [NSPasteboardItem] = []
+                    for entry in savedItems {
+                        let newItem = NSPasteboardItem()
+                        for (t, d) in entry {
+                            newItem.setData(d, forType: t)
+                        }
+                        writeItems.append(newItem)
+                    }
+                    pasteboard.writeObjects(writeItems)
                 }
             }
 
@@ -140,12 +162,43 @@ final class FolderNavigator: ObservableObject {
 
     // MARK: - Low-Level Focus & Key Event Injection
 
-    nonisolated private static func focusTargetAppSaveWindow(pid: pid_t) {
+    nonisolated private static func focusTargetAppSaveWindow(pid: pid_t, expectedFrame: NSRect? = nil) {
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(axApp, 0.04)
         AXUIElementSetAttributeValue(axApp, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
 
-        // Try focusing the Save/Open dialog or sheet directly first
+        // 1. If expectedFrame is known, find the matching window or attached sheet directly
+        if let targetFrame = expectedFrame {
+            var winsRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &winsRef) == .success,
+               let wins = winsRef as? [AXUIElement] {
+                let primaryHeight = NSScreen.screens.first?.frame.height ?? 900
+                for win in wins {
+                    if let f = extractCocoaFrame(win, primaryScreenHeight: primaryHeight),
+                       abs(f.origin.x - targetFrame.origin.x) < 25 && abs(f.size.width - targetFrame.size.width) < 25 {
+                        AXUIElementSetAttributeValue(win, kAXMainAttribute as CFString, kCFBooleanTrue)
+                        AXUIElementSetAttributeValue(win, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                        AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+                        return
+                    }
+                    var sheetsRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(win, "AXSheets" as CFString, &sheetsRef) == .success,
+                       let sheets = sheetsRef as? [AXUIElement] {
+                        for sheet in sheets {
+                            if let f = extractCocoaFrame(sheet, primaryScreenHeight: primaryHeight),
+                               abs(f.origin.x - targetFrame.origin.x) < 25 && abs(f.size.width - targetFrame.size.width) < 25 {
+                                AXUIElementSetAttributeValue(sheet, kAXMainAttribute as CFString, kCFBooleanTrue)
+                                AXUIElementSetAttributeValue(sheet, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                                AXUIElementPerformAction(sheet, kAXRaiseAction as CFString)
+                                return
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Try focusing the Save/Open dialog or sheet directly first
         let roots = findSaveDialogRoots(pid: pid)
         if let dialog = roots.first {
             AXUIElementSetAttributeValue(dialog, kAXMainAttribute as CFString, kCFBooleanTrue)
@@ -154,6 +207,7 @@ final class FolderNavigator: ObservableObject {
             return
         }
 
+        // 3. Fallback to first window
         var winsRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &winsRef) == .success,
            let wins = winsRef as? [AXUIElement],
@@ -162,6 +216,22 @@ final class FolderNavigator: ObservableObject {
             AXUIElementSetAttributeValue(firstWin, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             AXUIElementPerformAction(firstWin, kAXRaiseAction as CFString)
         }
+    }
+
+    nonisolated private static func extractCocoaFrame(_ element: AXUIElement, primaryScreenHeight: CGFloat) -> NSRect? {
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success else {
+            return nil
+        }
+        var pos = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(posRef as! AXValue, .cgPoint, &pos),
+              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else {
+            return nil
+        }
+        return NSRect(x: pos.x, y: primaryScreenHeight - pos.y - size.height, width: size.width, height: size.height)
     }
 
     /// Instant 0ms sidebar selection: If `folderPath` is one of the standard macOS user folders present in the

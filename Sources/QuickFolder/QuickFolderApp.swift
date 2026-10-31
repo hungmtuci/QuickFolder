@@ -38,12 +38,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupStatusBarMenu()
         setupHotKeys()
 
-        // Auto-open the dashboard after a GitHub self-update, explicit CLI flag, first launch, or missing Accessibility permission
+        // Auto-open the dashboard after a GitHub self-update, explicit CLI flag, first launch, or manual user launch
         let didJustUpdate = UserDefaults.standard.bool(forKey: "QF_OpenDashboardAfterUpdate")
         if didJustUpdate {
             UserDefaults.standard.removeObject(forKey: "QF_OpenDashboardAfterUpdate")
         }
-        if didJustUpdate || CommandLine.arguments.contains("--open-dashboard") || LaunchAtLoginManager.shared.shouldOpenDashboardOnStartup() {
+        let isStartupLaunch = CommandLine.arguments.contains("--startup")
+        let shouldShowDashboard: Bool
+        if didJustUpdate || CommandLine.arguments.contains("--open-dashboard") {
+            shouldShowDashboard = true
+        } else if isStartupLaunch {
+            shouldShowDashboard = LaunchAtLoginManager.shared.openDashboardOnStartup
+        } else {
+            // Manual launch by user (from Finder, Applications, Dock, or Spotlight)
+            shouldShowDashboard = true
+        }
+
+        if shouldShowDashboard {
             showDashboardWindow()
         }
 
