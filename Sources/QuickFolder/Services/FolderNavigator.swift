@@ -67,50 +67,55 @@ final class FolderNavigator: ObservableObject {
                 return
             }
 
-            // 1. Fast Path (0ms, no popup): If target folder is a standard sidebar favorite in the Save dialog, select its AXRow directly
-            let selectedViaSidebar = await Task.detached(priority: .userInitiated) {
-                Self.trySelectSidebarFolderDirectly(pid: targetPID, folderPath: folderPath)
-            }.value
-
-            if selectedViaSidebar {
-                self.showBanner("✓ Đã chuyển tới “\(folderName)”")
-                try? await Task.sleep(nanoseconds: 80_000_000)
-                await Task.detached(priority: .userInitiated) {
-                    Self.scrollColumnViewToRightmost(pid: targetPID)
-                }.value
-                detector.isNavigatingFolder = false
-                detector.pollNow()
-                return
-            }
-
-            // 2. Ultra-fast Go-To-Folder path for arbitrary/deep folders
+            // 1. Activate the target application with focus handoff
             if let app = NSRunningApplication(processIdentifier: targetPID) {
+                if #available(macOS 14.0, *) {
+                    NSApplication.shared.yieldActivation(to: app)
+                }
                 app.activate(options: [.activateAllWindows])
             }
             Self.focusTargetAppSaveWindow(pid: targetPID)
 
-            try? await Task.sleep(nanoseconds: 45_000_000) // 45ms focus handoff
+            try? await Task.sleep(nanoseconds: 90_000_000) // 90ms focus handoff
+
+            // 2. Put target path into pasteboard atomically (saving previous clipboard content)
+            let pasteboard = NSPasteboard.general
+            let previousString = pasteboard.string(forType: .string)
+            pasteboard.clearContents()
+            pasteboard.setString(folderPath, forType: .string)
 
             // Step 1: Send Cmd + Shift + G ("Go to Folder...")
             Self.postKeyStroke(keyCode: 5, flags: [.maskCommand, .maskShift]) // 'g' = 5
 
-            try? await Task.sleep(nanoseconds: 145_000_000) // 145ms for Go-To-Folder field to open
+            // Allow 220ms for the macOS Go-To-Folder sheet to slide in and gain text field focus
+            try? await Task.sleep(nanoseconds: 220_000_000)
 
-            // Step 2: Clear default text (Backspace = 51) and inject full UTF-16 path atomically
-            Self.postKeyStroke(keyCode: 51, flags: []) // Backspace
-            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
-            Self.postUnicodeString(folderPath)
+            // Step 2: Send Cmd + A (Select All) then Cmd + V (Paste full path from clipboard)
+            // This is 100% reliable for all Unicode/Vietnamese diacritics and long Google Drive paths
+            Self.postKeyStroke(keyCode: 0, flags: [.maskCommand]) // 'a' = 0
+            try? await Task.sleep(nanoseconds: 35_000_000)
+            Self.postKeyStroke(keyCode: 9, flags: [.maskCommand]) // 'v' = 9
 
-            try? await Task.sleep(nanoseconds: 65_000_000) // 65ms for path resolution
+            try? await Task.sleep(nanoseconds: 80_000_000) // 80ms for path resolution
 
-            // Step 3: Send Return (36) to confirm and jump to folder
+            // Step 3: Send Return (36) to confirm and jump into folder
             Self.postKeyStroke(keyCode: 36, flags: []) // Return = 36
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            Self.postKeyStroke(keyCode: 36, flags: []) // Second Return in case of autocomplete confirmation
+
+            // Step 4: Restore user's previous clipboard after navigation completes
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                if let prev = previousString {
+                    pasteboard.clearContents()
+                    pasteboard.setString(prev, forType: .string)
+                }
+            }
 
             self.showBanner("✓ Đã chuyển tới “\(folderName)”")
 
-            // Step 4: Auto-scroll ColumnView (AXBrowser) horizontal scrollbar to 1.0 (rightmost column)
-            // Triggered at 90ms, 190ms, and 310ms so even deeply nested Google Drive/cloud folders scroll to the end
-            for delayNs in [90_000_000 as UInt64, 100_000_000 as UInt64, 120_000_000 as UInt64] {
+            // Step 5: Auto-scroll ColumnView (AXBrowser) horizontal scrollbar to 1.0 (rightmost column)
+            for delayNs in [90_000_000 as UInt64, 120_000_000 as UInt64, 180_000_000 as UInt64] {
                 try? await Task.sleep(nanoseconds: delayNs)
                 await Task.detached(priority: .userInitiated) {
                     Self.scrollColumnViewToRightmost(pid: targetPID)
@@ -139,6 +144,15 @@ final class FolderNavigator: ObservableObject {
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(axApp, 0.04)
         AXUIElementSetAttributeValue(axApp, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+
+        // Try focusing the Save/Open dialog or sheet directly first
+        let roots = findSaveDialogRoots(pid: pid)
+        if let dialog = roots.first {
+            AXUIElementSetAttributeValue(dialog, kAXMainAttribute as CFString, kCFBooleanTrue)
+            AXUIElementSetAttributeValue(dialog, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            AXUIElementPerformAction(dialog, kAXRaiseAction as CFString)
+            return
+        }
 
         var winsRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &winsRef) == .success,
@@ -348,6 +362,7 @@ final class FolderNavigator: ObservableObject {
             keyDown.flags = flags
             keyDown.post(tap: .cghidEventTap)
         }
+        usleep(15_000)
         if let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) {
             keyUp.flags = flags
             keyUp.post(tap: .cghidEventTap)

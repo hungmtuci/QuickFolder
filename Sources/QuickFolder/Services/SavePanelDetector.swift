@@ -26,8 +26,8 @@ private let axObserverCallback: AXObserverCallback = { _, _, _, _ in
 final class SavePanelDetector: ObservableObject {
     static let shared = SavePanelDetector()
 
-    @Published private(set) var activePanel: DetectedSavePanel?
-    @Published private(set) var isAccessibilityTrusted: Bool = false
+    @Published var activePanel: DetectedSavePanel?
+    @Published var isAccessibilityTrusted: Bool = false
     @Published private(set) var excludedBundleIDs: Set<String> = []
 
     /// Temporarily locks the panel from hiding while FolderNavigator executes Cmd+Shift+G

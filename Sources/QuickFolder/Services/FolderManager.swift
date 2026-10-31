@@ -12,12 +12,12 @@ struct OpenFinderWindowInfo: Equatable, Sendable {
 final class FolderManager: ObservableObject {
     static let shared = FolderManager()
 
-    @Published private(set) var openFinderFolders: [FolderItem] = []
-    @Published private(set) var openFinderWindowInfos: [OpenFinderWindowInfo] = []
-    @Published private(set) var recentFolders: [FolderItem] = []
-    @Published private(set) var pinnedPaths: [String] = []
-    @Published private(set) var perAppDefaults: [String: String] = [:]
-    @Published private(set) var finderAutomationStatus: PermissionStatus = .unknown
+    @Published var openFinderFolders: [FolderItem] = []
+    @Published var openFinderWindowInfos: [OpenFinderWindowInfo] = []
+    @Published var recentFolders: [FolderItem] = []
+    @Published var pinnedPaths: [String] = []
+    @Published var perAppDefaults: [String: String] = [:]
+    @Published var finderAutomationStatus: PermissionStatus = .unknown
 
     @Published var autoJumpToAppDefault: Bool {
         didSet {
@@ -461,8 +461,8 @@ final class FolderManager: ObservableObject {
             var docRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(win, kAXDocumentAttribute as CFString, &docRef) == .success,
                let docStr = docRef as? String,
-               let url = URL(string: docStr), url.isFileURL {
-                results.append(OpenFinderWindowInfo(path: url.path, cocoaFrame: cocoaFrame))
+               let url = URL(string: docStr), let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
+                results.append(OpenFinderWindowInfo(path: p, cocoaFrame: cocoaFrame))
                 continue
             }
 
@@ -473,25 +473,77 @@ final class FolderManager: ObservableObject {
                 let proxyEl = proxy as! AXUIElement
                 var urlRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(proxyEl, kAXURLAttribute as CFString, &urlRef) == .success {
-                    if let url = urlRef as? URL, url.isFileURL {
-                        results.append(OpenFinderWindowInfo(path: url.path, cocoaFrame: cocoaFrame))
+                    if let url = urlRef as? URL, let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
+                        results.append(OpenFinderWindowInfo(path: p, cocoaFrame: cocoaFrame))
                         continue
-                    } else if let urlStr = urlRef as? String, let url = URL(string: urlStr), url.isFileURL {
-                        results.append(OpenFinderWindowInfo(path: url.path, cocoaFrame: cocoaFrame))
+                    } else if let urlStr = urlRef as? String, let url = URL(string: urlStr), let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
+                        results.append(OpenFinderWindowInfo(path: p, cocoaFrame: cocoaFrame))
                         continue
                     }
                 }
             }
 
-            // 3. Fallback: match window title
+            // 3. Deep Path Bar & AXURL Search: Search window hierarchy (bottom-up) for elements containing exact folder AXURL
             var titleRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef) == .success,
-               let title = (titleRef as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !title.isEmpty,
-               title.lowercased() != "recents" {
-                if let stdPath = standardMap[title.lowercased()] {
+            AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
+            let rawTitle = (titleRef as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let normalizedTitle = rawTitle.precomposedStringWithCanonicalMapping
+
+            var resolvedPath: String?
+
+            func searchFinderWindowPath(_ elem: AXUIElement, depth: Int) {
+                if depth > 8 || resolvedPath != nil { return }
+
+                var uRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(elem, "AXURL" as CFString, &uRef) == .success,
+                   let u = uRef as? URL ?? (uRef as? String).flatMap(URL.init(string:)),
+                   let p = (u as NSURL).filePathURL?.path, !p.isEmpty {
+                    let uNorm = URL(fileURLWithPath: p)
+                    // Case A: Element AXURL matches the window title directly
+                    if !normalizedTitle.isEmpty && uNorm.lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
+                        resolvedPath = uNorm.path
+                        return
+                    }
+                    // Case B: Element is a file/item inside this folder
+                    if !normalizedTitle.isEmpty && uNorm.deletingLastPathComponent().lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
+                        resolvedPath = uNorm.deletingLastPathComponent().path
+                        return
+                    }
+                    // Case C: Path Bar item matches title in AXValue
+                    var valRef: CFTypeRef?
+                    AXUIElementCopyAttributeValue(elem, kAXValueAttribute as CFString, &valRef)
+                    let v = ((valRef as? String) ?? "").precomposedStringWithCanonicalMapping
+                    if !normalizedTitle.isEmpty && (v == normalizedTitle || URL(fileURLWithPath: v).lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle) {
+                        resolvedPath = p
+                        return
+                    }
+                }
+
+                var kidsRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(elem, kAXChildrenAttribute as CFString, &kidsRef) == .success,
+                   let kids = kidsRef as? [AXUIElement] {
+                    // Traverse in reverse order because Path Bar is positioned at the bottom of the Finder window
+                    for child in kids.reversed() {
+                        searchFinderWindowPath(child, depth: depth + 1)
+                        if resolvedPath != nil { return }
+                    }
+                }
+            }
+
+            searchFinderWindowPath(win, depth: 0)
+
+            if let path = resolvedPath {
+                results.append(OpenFinderWindowInfo(path: path, cocoaFrame: cocoaFrame))
+                continue
+            }
+
+            // 4. Fallback: match window title against standard folders or known recent paths
+            if !normalizedTitle.isEmpty, normalizedTitle.lowercased() != "recents" {
+                if let stdPath = standardMap[normalizedTitle.lowercased()] {
                     results.append(OpenFinderWindowInfo(path: stdPath, cocoaFrame: cocoaFrame))
-                } else if let matched = knownRecentPaths.first(where: { URL(fileURLWithPath: $0).lastPathComponent == title }) {
+                } else if let matched = knownRecentPaths.first(where: {
+                    URL(fileURLWithPath: $0).lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle
+                }) {
                     results.append(OpenFinderWindowInfo(path: matched, cocoaFrame: cocoaFrame))
                 }
             }

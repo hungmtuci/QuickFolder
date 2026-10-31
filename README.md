@@ -12,8 +12,10 @@
   <img src="docs/images/settings-dashboard.png" alt="Bảng điều khiển Cài đặt & Thử nghiệm QuickFolder" width="760" />
 </p>
 
-## ✨ Tính năng nổi bật (v1.3.2)
+## ✨ Tính năng nổi bật (v1.3.3)
 
+- **Nhận diện đầy đủ 100% cửa sổ Finder đang mở (kể cả Google Drive & thư mục lồng sâu)**: Tự động bóc tách đường dẫn trực tiếp từ thanh Path Bar (`AXURL` fileID URL) của Finder, nhận diện chính xác toàn bộ các cửa sổ Finder đang mở thay vì chỉ nhận diện các thư mục mặc định cơ bản.
+- **Điều hướng Save/Open tức thì & chuẩn xác khi bấm chuột / Finder-Click**: Sửa lỗi bấm chuột không chuyển thư mục: chuyển sang cơ chế kích hoạt tiêu điểm hộp thoại kết hợp clipboard paste (`Cmd+V`) và phím tắt `Cmd+Shift+G`, hỗ trợ mượt mà cả các đường dẫn tiếng Việt có dấu, khoảng trắng và thư mục đám mây.
 - **Tuỳ chọn “Khởi động cùng macOS” & “Bật bảng này khi khởi động”**: Tích hợp thanh tuỳ chọn nhanh ngay đầu cửa sổ điều khiển và trên Menu Bar để bạn chủ động chọn tự chạy cùng macOS, mở sẵn bảng điều khiển khi khởi động hoặc chạy ngầm hoàn toàn trên thanh Menu Bar.
 - **Nút “Update từ GitHub” 1 chạm ở mọi nơi (Bảng nổi, Cửa sổ Cài đặt & Menu Bar)**: Tích hợp nút **Update từ GitHub** trực tiếp trên thanh bên nổi cạnh hộp thoại Save/Open, trong cửa sổ Cài đặt và trên Menu Bar (`⌘U`) — tự động kiểm tra tag mới nhất trên `hungmtuci/QuickFolder`, tải gói cập nhật kèm thanh tiến trình, thay thế `/Applications/QuickFolder.app`, gỡ cờ cách ly Gatekeeper và khởi động lại ngay lập tức (hỗ trợ cả tải & cài lại bản sạch khi đang ở phiên bản mới nhất).
 - **Thanh bên nổi tự động & Bám theo thời gian thực (`AXObserver` 60fps, ~0% CPU khi nghỉ)**: Tự động xuất hiện bám sát cạnh phải hoặc cạnh trái của hộp thoại `Save` / `Open` qua sự kiện `AXObserver` mà không tốn CPU chạy ngầm khi nghỉ.
@@ -37,8 +39,8 @@
 ## 📥 Tải về & Cài đặt nhanh (macOS 14.0+ Universal: Apple Silicon & Intel)
 
 1. Tải bộ cài mới nhất tại trang **[Releases](https://github.com/hungmtuci/QuickFolder/releases/latest)**:
-   - **`QuickFolder-Installer-v1.3.2.dmg`** *(Khuyên dùng)*
-   - Hoặc **`QuickFolder-v1.3.2-macOS.zip`**
+   - **`QuickFolder-Installer-v1.3.3.dmg`** *(Khuyên dùng)*
+   - Hoặc **`QuickFolder-v1.3.3-macOS.zip`**
 2. Mở file `.dmg`:
    - Kéo `QuickFolder.app` thả vào thư mục **`Applications`**, **HOẶC** nhấp chuột phải vào `Cai_Dat_QuickFolder.command` -> chọn **Open** để tự động cài đặt và gỡ cờ cách ly Gatekeeper.
 3. Nếu macOS báo ứng dụng chưa công chứng Apple Developer ID khi mở lần đầu trên máy mới, chạy lệnh sau trong Terminal:

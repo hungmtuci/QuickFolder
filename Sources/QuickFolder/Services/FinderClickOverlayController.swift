@@ -6,6 +6,19 @@ import Combine
 private final class FinderHighlightPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+    var onPanelClicked: (() -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseUp {
+            onPanelClicked?()
+            return
+        }
+        super.sendEvent(event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onPanelClicked?()
+    }
 }
 
 private struct FinderHighlightOverlayView: View {
@@ -188,13 +201,16 @@ final class FinderClickOverlayController: ObservableObject {
         }
 
         let item = FolderItem(path: info.path, source: .openFinderWindow(windowIndex: 1))
+        let selectAction: () -> Void = { [weak self] in
+            self?.hideOverlay()
+            FolderNavigator.shared.selectFolder(item)
+        }
+        panel.onPanelClicked = selectAction
+
         let rootView = FinderHighlightOverlayView(
             folderName: item.name,
             displayPath: item.displayPath,
-            onSelect: { [weak self] in
-                self?.hideOverlay()
-                FolderNavigator.shared.selectFolder(item)
-            }
+            onSelect: selectAction
         )
         panel.contentView = NSHostingView(rootView: rootView)
         panel.setFrame(frame, display: true)
