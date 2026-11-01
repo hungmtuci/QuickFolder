@@ -7,6 +7,37 @@ final class QuickFolderNSPanel: NSPanel {
     var allowKeyFocus: Bool = false
     override var canBecomeKey: Bool { allowKeyFocus }
     override var canBecomeMain: Bool { false }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 125 { // Down arrow
+            FloatingPanelController.shared.moveSelection(down: true)
+            return
+        } else if event.keyCode == 126 { // Up arrow
+            FloatingPanelController.shared.moveSelection(down: false)
+            return
+        } else if event.keyCode == 36 { // Return / Enter
+            if FloatingPanelController.shared.confirmCurrentSelection() {
+                return
+            }
+        } else if event.keyCode == 53 { // Escape
+            if FloatingPanelController.shared.handleEscape() {
+                return
+            }
+        }
+        super.keyDown(with: event)
+    }
+}
+
+enum DisplayDensity: String, CaseIterable {
+    case comfortable = "comfortable"
+    case compact = "compact"
+
+    var title: String {
+        switch self {
+        case .comfortable: return "Thoải mái (Comfortable)"
+        case .compact: return "Gọn gàng (Compact)"
+        }
+    }
 }
 
 enum DockSide: String, CaseIterable {
@@ -26,6 +57,7 @@ enum SidebarTab: String, CaseIterable {
     case openFinder = "finder"
     case favorites = "favorites"
     case recents = "recents"
+    case recentFiles = "files"
 
     var title: String {
         switch self {
@@ -33,6 +65,7 @@ enum SidebarTab: String, CaseIterable {
         case .openFinder: return "Cửa sổ Finder đang mở"
         case .favorites: return "Thư mục Yêu thích"
         case .recents: return "Thư mục Gần đây"
+        case .recentFiles: return "Tệp đã lưu gần đây"
         }
     }
 }
@@ -43,12 +76,24 @@ final class FloatingPanelController: ObservableObject {
 
     @Published var searchText: String = ""
     @Published var hoveredID: String?
-    @Published var selectedTab: SidebarTab = .all
+    @Published var selectedIndex: Int? = nil
+    @Published var isDropTargeted: Bool = false
+    @Published var selectedTab: SidebarTab = .all {
+        didSet {
+            selectedIndex = nil
+        }
+    }
     @Published var isCompactBezel: Bool = false {
         didSet {
             if let active = SavePanelDetector.shared.activePanel {
                 positionBeside(savePanelFrame: active.cocoaFrame)
             }
+        }
+    }
+
+    @Published var displayDensity: DisplayDensity {
+        didSet {
+            UserDefaults.standard.set(displayDensity.rawValue, forKey: "QuickFolder.DisplayDensity")
         }
     }
 
@@ -80,6 +125,10 @@ final class FloatingPanelController: ObservableObject {
     private init() {
         let savedSide = UserDefaults.standard.string(forKey: "QuickFolder.DockSide") ?? DockSide.right.rawValue
         self.dockSide = DockSide(rawValue: savedSide) ?? .right
+
+        let savedDensity = UserDefaults.standard.string(forKey: "QuickFolder.DisplayDensity") ?? DisplayDensity.comfortable.rawValue
+        self.displayDensity = DisplayDensity(rawValue: savedDensity) ?? .comfortable
+
         if UserDefaults.standard.object(forKey: "QuickFolder.HideFromDock") == nil {
             self.hideFromDock = true
             UserDefaults.standard.set(true, forKey: "QuickFolder.HideFromDock")
@@ -88,6 +137,59 @@ final class FloatingPanelController: ObservableObject {
         }
         setupPanel()
         bindDetector()
+    }
+
+    // MARK: - Keyboard Navigation (Arrow Up / Down / Enter / Esc)
+
+    func moveSelection(down: Bool) {
+        let all = currentVisibleItems()
+        guard !all.isEmpty else {
+            selectedIndex = nil
+            return
+        }
+        if let current = selectedIndex {
+            if down {
+                selectedIndex = min(current + 1, all.count - 1)
+            } else {
+                selectedIndex = max(current - 1, 0)
+            }
+        } else {
+            selectedIndex = down ? 0 : (all.count - 1)
+        }
+    }
+
+    func confirmCurrentSelection() -> Bool {
+        let all = currentVisibleItems()
+        guard let idx = selectedIndex, idx >= 0, idx < all.count else { return false }
+        FolderNavigator.shared.selectFolder(all[idx])
+        return true
+    }
+
+    func handleEscape() -> Bool {
+        if !searchText.isEmpty {
+            searchText = ""
+            selectedIndex = nil
+            return true
+        }
+        dismissPanelManually()
+        return true
+    }
+
+    func currentVisibleItems() -> [FolderItem] {
+        let fm = FolderManager.shared
+        switch selectedTab {
+        case .all:
+            return fm.allQuickAccessFolders(searchQuery: searchText)
+        case .openFinder:
+            return fm.filtered(fm.openFinderFolders, query: searchText)
+        case .favorites:
+            let favs = fm.recentFolders.filter { fm.isPinned($0.path) }
+            return fm.filtered(favs, query: searchText)
+        case .recents:
+            return fm.filtered(fm.recentFolders, query: searchText)
+        case .recentFiles:
+            return []
+        }
     }
 
     func applyDockVisibilityPolicy() {
@@ -208,14 +310,16 @@ final class FloatingPanelController: ObservableObject {
 
     func positionBeside(savePanelFrame: NSRect) {
         guard let panel = panel else { return }
-        let screen = NSScreen.screens.first(where: { $0.frame.intersects(savePanelFrame) })
+        let centerPoint = NSPoint(x: savePanelFrame.midX, y: savePanelFrame.midY)
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(centerPoint, $0.frame, false) })
+            ?? NSScreen.screens.first(where: { $0.frame.intersects(savePanelFrame) })
             ?? NSScreen.main
             ?? NSScreen.screens.first
         let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 
         let width = currentWidth
-        let height = min(max(savePanelFrame.height, 380), min(680, visibleFrame.height - 20))
-        let gap: CGFloat = 2
+        let height = min(max(savePanelFrame.height, 380), min(720, visibleFrame.height - 24))
+        let gap: CGFloat = 3
         var targetX: CGFloat
 
         switch dockSide {
@@ -224,23 +328,26 @@ final class FloatingPanelController: ObservableObject {
             if rightCandidate + width <= visibleFrame.maxX {
                 targetX = rightCandidate
             } else if savePanelFrame.minX - gap - width >= visibleFrame.minX {
+                // Auto-flip to left side if right side overflows screen
                 targetX = savePanelFrame.minX - gap - width
             } else {
-                targetX = visibleFrame.maxX - width - 6
+                targetX = max(visibleFrame.minX + 4, visibleFrame.maxX - width - 4)
             }
         case .left:
             let leftCandidate = savePanelFrame.minX - gap - width
             if leftCandidate >= visibleFrame.minX {
                 targetX = leftCandidate
             } else if savePanelFrame.maxX + gap + width <= visibleFrame.maxX {
+                // Auto-flip to right side if left side overflows screen
                 targetX = savePanelFrame.maxX + gap
             } else {
-                targetX = visibleFrame.minX + 6
+                targetX = visibleFrame.minX + 4
             }
         }
 
         var targetY = savePanelFrame.maxY - height
-        targetY = max(visibleFrame.minY + 6, min(targetY, visibleFrame.maxY - height - 6))
+        // Clamp strictly within the target screen's visible frame (above Dock, below Menu Bar)
+        targetY = max(visibleFrame.minY + 4, min(targetY, visibleFrame.maxY - height - 4))
 
         let newFrame = NSRect(x: round(targetX), y: round(targetY), width: width, height: round(height))
         if abs(panel.frame.origin.x - newFrame.origin.x) > 1 ||

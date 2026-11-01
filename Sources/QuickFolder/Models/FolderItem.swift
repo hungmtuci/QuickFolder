@@ -46,6 +46,36 @@ struct FolderItem: Identifiable, Hashable {
         return img
     }
 
+    var searchKey: String {
+        "\(name) \(displayPath)".folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+    }
+
+    var existsOnDisk: Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    var formattedTooltip: String {
+        var lines: [String] = [
+            "📁 \(name)",
+            "Đường dẫn: \(path)"
+        ]
+        let url = URL(fileURLWithPath: path)
+        if let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .volumeAvailableCapacityForImportantUsageKey]) {
+            if let modDate = values.contentModificationDate {
+                let df = DateFormatter()
+                df.dateStyle = .medium
+                df.timeStyle = .short
+                lines.append("Sửa đổi gần nhất: \(df.string(from: modDate))")
+            }
+            if let free = values.volumeAvailableCapacityForImportantUsage {
+                let byteCount = ByteCountFormatter.string(fromByteCount: free, countStyle: .file)
+                lines.append("Dung lượng trống ổ đĩa: \(byteCount)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func standardizePath(_ rawPath: String) -> String {
         let expanded = (rawPath as NSString).expandingTildeInPath
         let standard = (expanded as NSString).standardizingPath

@@ -15,6 +15,12 @@ final class FolderNavigator: ObservableObject {
 
     /// Navigates the active Save/Open dialog to `folder.path`, or opens it in Finder if no Save/Open dialog is open.
     func selectFolder(_ folder: FolderItem) {
+        guard folder.existsOnDisk else {
+            showBanner("⚠️ Thư mục không tồn tại hoặc đã bị xóa: “\(folder.name)”")
+            FolderManager.shared.removeRecent(path: folder.path)
+            return
+        }
+
         FolderManager.shared.recordFolderUsed(folder.path)
 
         // 1. If our built-in Test Save Panel is open, update its directoryURL directly for instant response

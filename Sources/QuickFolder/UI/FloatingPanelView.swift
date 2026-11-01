@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct FloatingPanelView: View {
     @ObservedObject var folderManager: FolderManager
@@ -36,6 +37,10 @@ struct FloatingPanelView: View {
 
     private var filteredRecent: [FolderItem] {
         folderManager.filtered(folderManager.recentFolders, query: panelController.searchText)
+    }
+
+    private var allVisibleItems: [FolderItem] {
+        panelController.currentVisibleItems()
     }
 
     /// Maps each visible FolderItem.id to its 1-based quick shortcut number (1...9)
@@ -97,6 +102,8 @@ struct FloatingPanelView: View {
                                 favoritesSection
                             case .recents:
                                 recentFoldersSection
+                            case .recentFiles:
+                                recentFilesSection
                             }
                         }
                         .padding(.horizontal, 10)
@@ -120,6 +127,40 @@ struct FloatingPanelView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.22), lineWidth: 1)
         )
+        .overlay(
+            Group {
+                if panelController.isDropTargeted {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, dash: [6, 4]))
+                        .background(Color.accentColor.opacity(0.18).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous)))
+                        .overlay(
+                            VStack(spacing: 8) {
+                                Image(systemName: "arrow.down.doc.fill")
+                                    .font(.system(size: 32))
+                                    .foregroundStyle(Color.accentColor)
+                                Text("Thả thư mục vào đây để chuyển ngay")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(.primary)
+                            }
+                        )
+                }
+            }
+        )
+        .onDrop(of: [.fileURL], isTargeted: $panelController.isDropTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url = url else { return }
+                Task { @MainActor in
+                    var isDir: ObjCBool = false
+                    let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+                    guard exists else { return }
+                    let targetPath = isDir.boolValue ? url.path : url.deletingLastPathComponent().path
+                    let folder = FolderItem(path: targetPath, source: .recent)
+                    self.navigator.selectFolder(folder)
+                }
+            }
+            return true
+        }
     }
 
     // MARK: - Default Folder X Style Vertical Icon Rail
@@ -156,6 +197,14 @@ struct FloatingPanelView: View {
                 systemImage: "clock.arrow.circlepath",
                 badgeCount: nil,
                 tooltip: "Lịch sử thư mục gần đây"
+            )
+
+            // 5. Recent Saved Files Icon
+            railIconButton(
+                tab: .recentFiles,
+                systemImage: "doc.badge.clock",
+                badgeCount: folderManager.recentSavedFiles.isEmpty ? nil : folderManager.recentSavedFiles.count,
+                tooltip: "Tệp đã lưu / thay đổi gần đây"
             )
 
             Divider()
@@ -252,11 +301,21 @@ struct FloatingPanelView: View {
             if panelController.isCompactBezel {
                 panelController.selectedTab = tab
                 panelController.isCompactBezel = false
+                if tab == .recentFiles {
+                    folderManager.refreshRecentSavedFiles()
+                }
             } else if panelController.selectedTab == tab {
-                // Clicking active tab again refreshes Finder windows
-                folderManager.refreshNow()
+                // Clicking active tab again refreshes
+                if tab == .recentFiles {
+                    folderManager.refreshRecentSavedFiles()
+                } else {
+                    folderManager.refreshNow()
+                }
             } else {
                 panelController.selectedTab = tab
+                if tab == .recentFiles {
+                    folderManager.refreshRecentSavedFiles()
+                }
             }
         } label: {
             ZStack(alignment: .topTrailing) {
@@ -330,6 +389,16 @@ struct FloatingPanelView: View {
             .buttonStyle(.plain)
             .disabled(updateChecker.isChecking || updateChecker.isInstallingUpdate)
             .help("Update từ GitHub (hungmtuci/QuickFolder)")
+
+            Button {
+                panelController.displayDensity = (panelController.displayDensity == .comfortable ? .compact : .comfortable)
+            } label: {
+                Image(systemName: panelController.displayDensity == .compact ? "rectangle.split.2x2" : "rectangle.grid.1x2")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Mật độ hiển thị: \(panelController.displayDensity == .comfortable ? "Gọn gàng (Compact)" : "Thoải mái (Comfortable)")")
 
             Button {
                 folderManager.refreshNow()
@@ -588,7 +657,8 @@ struct FloatingPanelView: View {
                 .padding(.vertical, 6)
             } else {
                 ForEach(filteredOpen) { item in
-                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id])
+                    let listIdx = allVisibleItems.firstIndex(of: item)
+                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id], listIndex: listIdx)
                 }
             }
         }
@@ -615,7 +685,8 @@ struct FloatingPanelView: View {
                     .padding(.vertical, 6)
             } else {
                 ForEach(filteredFavorites) { item in
-                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id])
+                    let listIdx = allVisibleItems.firstIndex(of: item)
+                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id], listIndex: listIdx)
                 }
             }
         }
@@ -643,15 +714,122 @@ struct FloatingPanelView: View {
                     .padding(.vertical, 6)
             } else {
                 ForEach(filteredRecent) { item in
-                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id])
+                    let listIdx = allVisibleItems.firstIndex(of: item)
+                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id], listIndex: listIdx)
                 }
             }
         }
     }
 
-    private func folderRow(item: FolderItem, shortcutIndex: Int?) -> some View {
+    private var recentFilesSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("TỆP ĐÃ LƯU / SỬA ĐỔI GẦN ĐÂY", systemImage: "doc.badge.clock")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    folderManager.refreshRecentSavedFiles()
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Làm mới danh sách tệp gần đây")
+
+                Text("\(folderManager.recentSavedFiles.count)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 4)
+
+            if folderManager.recentSavedFiles.isEmpty {
+                VStack(spacing: 8) {
+                    Text("Chưa tìm thấy tệp mới lưu trong 3 ngày qua.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Button("Quét tệp gần đây") {
+                        folderManager.refreshRecentSavedFiles()
+                    }
+                    .controlSize(.small)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 16)
+            } else {
+                ForEach(folderManager.recentSavedFiles) { file in
+                    recentFileRow(file: file)
+                }
+            }
+        }
+    }
+
+    private func recentFileRow(file: SavedFileInfo) -> some View {
+        let isHovered = panelController.hoveredID == file.id
+        let isCompact = panelController.displayDensity == .compact
+
+        return HStack(spacing: 8) {
+            Button {
+                let parent = FolderItem(path: file.parentPath, source: .recent)
+                navigator.selectFolder(parent)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(nsImage: file.icon)
+                        .resizable()
+                        .frame(width: isCompact ? 17 : 20, height: isCompact ? 17 : 20)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(file.name)
+                            .font(.system(size: isCompact ? 11.5 : 12, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+
+                        HStack(spacing: 5) {
+                            Text(file.formattedDate)
+                            Text("•")
+                            Text(file.formattedSize)
+                        }
+                        .font(.system(size: isCompact ? 9 : 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // Button to reveal in Finder
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([file.url])
+            } label: {
+                Image(systemName: "magnifyingglass.circle")
+                    .font(.system(size: isCompact ? 12 : 13))
+                    .foregroundStyle(isHovered ? Color.accentColor : Color.secondary.opacity(0.8))
+            }
+            .buttonStyle(.plain)
+            .help("Xem tệp trong Finder")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, isCompact ? 3.5 : 5.5)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isHovered ? Color.accentColor.opacity(0.16) : Color.clear)
+        )
+        .onHover { hovering in
+            panelController.hoveredID = hovering ? file.id : (panelController.hoveredID == file.id ? nil : panelController.hoveredID)
+        }
+        .help("📁 \(file.parentPath)\nNgày sửa: \(file.formattedDate)\nDung lượng: \(file.formattedSize)\nBấm để chuyển Save dialog tới thư mục chứa tệp này")
+    }
+
+    private func folderRow(item: FolderItem, shortcutIndex: Int?, listIndex: Int?) -> some View {
         let isHovered = panelController.hoveredID == item.id
+        let isSelected = (listIndex != nil && panelController.selectedIndex == listIndex)
         let isPinned = folderManager.isPinned(item.path)
+        let isCompact = panelController.displayDensity == .compact
+        let exists = item.existsOnDisk
 
         return HStack(spacing: 8) {
             Button {
@@ -661,7 +839,8 @@ struct FloatingPanelView: View {
                     ZStack(alignment: .bottomTrailing) {
                         Image(nsImage: item.icon)
                             .resizable()
-                            .frame(width: 20, height: 20)
+                            .frame(width: isCompact ? 17 : 20, height: isCompact ? 17 : 20)
+                            .opacity(exists ? 1.0 : 0.45)
 
                         if case .openFinderWindow(let idx) = item.source, idx == 1 {
                             Circle()
@@ -674,9 +853,15 @@ struct FloatingPanelView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 4) {
                             Text(item.name)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.primary)
+                                .font(.system(size: isCompact ? 11.5 : 12, weight: isSelected ? .bold : .medium))
+                                .foregroundStyle(exists ? Color.primary : Color.secondary)
                                 .lineLimit(1)
+
+                            if !exists {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.orange)
+                            }
 
                             if isPinned {
                                 Image(systemName: "pin.fill")
@@ -686,7 +871,7 @@ struct FloatingPanelView: View {
                         }
 
                         Text(item.displayPath)
-                            .font(.system(size: 10))
+                            .font(.system(size: isCompact ? 9 : 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -713,7 +898,7 @@ struct FloatingPanelView: View {
 
             if let shortcutIndex {
                 Text("⌥\(shortcutIndex)")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(.system(size: isCompact ? 9 : 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1.5)
@@ -726,22 +911,38 @@ struct FloatingPanelView: View {
                 SubfolderMenuPresenter.shared.popUpSubfolderMenu(for: item)
             } label: {
                 Image(systemName: "chevron.right.circle")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(isHovered ? Color.accentColor : Color.secondary.opacity(0.75))
+                    .font(.system(size: isCompact ? 11.5 : 12.5, weight: .medium))
+                    .foregroundStyle((isHovered || isSelected) ? Color.accentColor : Color.secondary.opacity(0.75))
                     .frame(width: 20, height: 20)
             }
             .buttonStyle(.plain)
             .help("Duyệt cây thư mục con / Tạo thư mục mới / Đặt mặc định cho app")
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.vertical, isCompact ? 3.5 : 5.5)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isHovered ? Color.accentColor.opacity(0.16) : Color.clear)
+                .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.14) : Color.clear))
+        )
+        .overlay(
+            Group {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
+                }
+            }
         )
         .onHover { hovering in
-            panelController.hoveredID = hovering ? item.id : (panelController.hoveredID == item.id ? nil : panelController.hoveredID)
+            if hovering {
+                panelController.hoveredID = item.id
+                if let listIndex {
+                    panelController.selectedIndex = listIndex
+                }
+            } else if panelController.hoveredID == item.id {
+                panelController.hoveredID = nil
+            }
         }
+        .help(item.formattedTooltip)
     }
 
     private var footerSection: some View {

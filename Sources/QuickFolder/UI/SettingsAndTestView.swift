@@ -22,6 +22,8 @@ struct SettingsAndTestView: View {
 
                 preferencesAndShortcutsSection
 
+                excludedAppsSection
+
                 liveFoldersPreviewSection
             }
             .padding(20)
@@ -360,6 +362,14 @@ struct SettingsAndTestView: View {
                 .pickerStyle(.radioGroup)
                 .font(.system(size: 12))
 
+                Picker("Mật độ hiển thị bảng nổi:", selection: $panelController.displayDensity) {
+                    ForEach(DisplayDensity.allCases, id: \.self) { density in
+                        Text(density.title).tag(density)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .font(.system(size: 12))
+
                 Toggle(isOn: launchAtLoginBinding) {
                     Text("Khởi động cùng macOS")
                         .font(.system(size: 12, weight: .medium))
@@ -396,21 +406,6 @@ struct SettingsAndTestView: View {
                 }
                 .toggleStyle(.checkbox)
 
-                if !detector.excludedBundleIDs.isEmpty {
-                    HStack {
-                        Text("Đã ẩn trên \(detector.excludedBundleIDs.count) ứng dụng")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Khôi phục tất cả") {
-                            for key in Array(detector.excludedBundleIDs) {
-                                detector.toggleExcludedApp(key)
-                            }
-                        }
-                        .controlSize(.mini)
-                    }
-                }
-
                 Divider()
 
                 HStack(spacing: 8) {
@@ -420,6 +415,15 @@ struct SettingsAndTestView: View {
                         Label("Ghim thêm thư mục...", systemImage: "pin.fill")
                     }
                     .controlSize(.small)
+
+                    Button {
+                        folderManager.purgeStaleRecents()
+                        navigator.showBanner("✓ Đã dọn dẹp các thư mục không còn tồn tại")
+                    } label: {
+                        Label("Dọn dẹp thư mục lỗi", systemImage: "trash")
+                    }
+                    .controlSize(.small)
+                    .help("Loại bỏ những thư mục đã bị xóa hoặc đổi tên khỏi danh sách gần đây")
 
                     Button {
                         panelController.toggleManualPanel()
@@ -475,12 +479,110 @@ struct SettingsAndTestView: View {
                 }
 
                 shortcutRow(keys: "⌥ 1 … ⌥ 9", desc: "Chọn nhanh thư mục số 1…9 khi bảng nổi đang mở")
+                shortcutRow(keys: "↑ / ↓ + Enter", desc: "Duyệt danh sách thư mục & xác nhận chuyển bằng bàn phím")
+                shortcutRow(keys: "Kéo & Thả", desc: "Thả tệp/thư mục từ Finder vào bảng nổi để chuyển ngay")
                 shortcutRow(keys: "Nút ▸", desc: "Duyệt cây thư mục con nhiều cấp & tạo thư mục mới")
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
+        }
+    }
+
+    // MARK: - Excluded Apps Management Section
+
+    private var excludedAppsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("DANH SÁCH ỨNG DỤNG BỎ QUA (EXCLUDED APPLICATIONS)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+
+                Button {
+                    pickAppToExclude()
+                } label: {
+                    Label("Thêm ứng dụng...", systemImage: "plus.circle")
+                }
+                .controlSize(.small)
+
+                if !detector.excludedBundleIDs.isEmpty {
+                    Button("Khôi phục tất cả") {
+                        for key in Array(detector.excludedBundleIDs) {
+                            detector.toggleExcludedApp(key)
+                        }
+                    }
+                    .controlSize(.small)
+                }
+            }
+
+            if detector.excludedBundleIDs.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                        .foregroundStyle(.green)
+                    Text("Chưa có ứng dụng nào bị bỏ qua. Bảng nổi sẽ tự động xuất hiện cạnh tất cả hộp thoại Save/Open.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(Array(detector.excludedBundleIDs), id: \.self) { bundleID in
+                        excludedAppRow(bundleID: bundleID)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
+    }
+
+    private func excludedAppRow(bundleID: String) -> some View {
+        let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        let appName = appURL?.deletingPathExtension().lastPathComponent ?? bundleID
+        let icon = appURL.map { NSWorkspace.shared.icon(forFile: $0.path) } ?? NSWorkspace.shared.icon(for: .application)
+        icon.size = NSSize(width: 18, height: 18)
+
+        return HStack(spacing: 8) {
+            Image(nsImage: icon)
+                .resizable()
+                .frame(width: 18, height: 18)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(appName)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                Text(bundleID)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button("Bỏ chặn") {
+                detector.toggleExcludedApp(bundleID)
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.03)))
+    }
+
+    private func pickAppToExclude() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = "Thêm vào danh sách bỏ qua"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            let bundle = Bundle(url: url)
+            let id = bundle?.bundleIdentifier ?? url.deletingPathExtension().lastPathComponent
+            detector.toggleExcludedApp(id)
         }
     }
 

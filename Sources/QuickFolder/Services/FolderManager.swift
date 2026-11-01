@@ -17,6 +17,7 @@ final class FolderManager: ObservableObject {
     @Published var recentFolders: [FolderItem] = []
     @Published var pinnedPaths: [String] = []
     @Published var perAppDefaults: [String: String] = [:]
+    @Published var recentSavedFiles: [SavedFileInfo] = []
     @Published var finderAutomationStatus: PermissionStatus = .unknown
 
     @Published var autoJumpToAppDefault: Bool {
@@ -153,10 +154,104 @@ final class FolderManager: ObservableObject {
         rebuildPublishedLists(openInfos: openFinderWindowInfos)
     }
 
+    func removeRecent(path: String) {
+        let std = FolderItem.standardizePath(path)
+        storedRecents.removeAll(where: { $0.path == std })
+        pinnedPaths.removeAll(where: { $0 == std })
+        savePersistedData()
+        UserDefaults.standard.set(pinnedPaths, forKey: pinnedKey)
+        rebuildPublishedLists(openInfos: openFinderWindowInfos)
+    }
+
+    func purgeStaleRecents() {
+        var changed = false
+        let initialRecentsCount = storedRecents.count
+        storedRecents.removeAll { item in
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: item.path, isDirectory: &isDir) && isDir.boolValue
+            return !exists
+        }
+        if storedRecents.count != initialRecentsCount {
+            changed = true
+        }
+
+        let initialPinnedCount = pinnedPaths.count
+        pinnedPaths.removeAll { path in
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+            return !exists
+        }
+        if pinnedPaths.count != initialPinnedCount {
+            changed = true
+            UserDefaults.standard.set(pinnedPaths, forKey: pinnedKey)
+        }
+
+        if changed {
+            savePersistedData()
+            rebuildPublishedLists(openInfos: openFinderWindowInfos)
+        }
+    }
+
     func clearRecentHistory() {
         storedRecents.removeAll()
         UserDefaults.standard.removeObject(forKey: recentsKey)
         rebuildPublishedLists(openInfos: openFinderWindowInfos)
+    }
+
+    /// Refresh recent saved files across key user locations (Downloads, Desktop, Documents, recent folders)
+    func refreshRecentSavedFiles() {
+        Task.detached(priority: .utility) {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            var targetFolders = [
+                "\(home)/Downloads",
+                "\(home)/Desktop",
+                "\(home)/Documents"
+            ]
+            let extraRecents = await MainActor.run {
+                self.storedRecents.prefix(5).map(\.path)
+            }
+            targetFolders.append(contentsOf: extraRecents)
+
+            var collected: [SavedFileInfo] = []
+            let fm = FileManager.default
+            let threeDaysAgo = Date().addingTimeInterval(-3 * 86400)
+
+            for folder in Set(targetFolders) {
+                let folderURL = URL(fileURLWithPath: folder)
+                guard let enumerator = fm.enumerator(
+                    at: folderURL,
+                    includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
+                    options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+                ) else { continue }
+
+                while let fileURL = enumerator.nextObject() as? URL {
+                    guard let vals = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
+                          vals.isRegularFile == true,
+                          let modDate = vals.contentModificationDate,
+                          modDate > threeDaysAgo else { continue }
+
+                    let name = fileURL.lastPathComponent
+                    guard !name.hasPrefix("."), !name.hasSuffix(".download"), !name.hasSuffix(".crdownload") else { continue }
+
+                    collected.append(
+                        SavedFileInfo(
+                            name: name,
+                            path: fileURL.path,
+                            parentPath: folder,
+                            modificationDate: modDate,
+                            fileSize: Int64(vals.fileSize ?? 0)
+                        )
+                    )
+                }
+            }
+
+            collected.sort { $0.modificationDate > $1.modificationDate }
+            let trimmed = Array(collected.prefix(20))
+
+            await MainActor.run {
+                self.recentSavedFiles = trimmed
+            }
+        }
     }
 
     /// Returns a combined ordered list for quick keyboard shortcuts (Opt+1 .. Opt+9)
@@ -167,11 +262,11 @@ final class FolderManager: ObservableObject {
     }
 
     func filtered(_ items: [FolderItem], query: String) -> [FolderItem] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return items }
+        let normalized = trimmed.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
         return items.filter {
-            $0.name.lowercased().contains(trimmed) ||
-            $0.displayPath.lowercased().contains(trimmed)
+            $0.searchKey.contains(normalized)
         }
     }
 
@@ -354,13 +449,32 @@ final class FolderManager: ObservableObject {
             set outputText to ""
             repeat with w in Finder windows
                 try
-                    set p to POSIX path of (target of w as alias)
                     set b to bounds of w
-                    set lineStr to p & "\t" & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b)
-                    if outputText is "" then
-                        set outputText to lineStr
+                    set bStr to (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b)
+                    set tabList to {}
+                    try
+                        set tabList to tabs of w
+                    end try
+                    if (count of tabList) > 0 then
+                        repeat with t in tabList
+                            try
+                                set p to POSIX path of (target of t as alias)
+                                set lineStr to p & "\t" & bStr
+                                if outputText is "" then
+                                    set outputText to lineStr
+                                else
+                                    set outputText to outputText & linefeed & lineStr
+                                end if
+                            end try
+                        end repeat
                     else
-                        set outputText to outputText & linefeed & lineStr
+                        set p to POSIX path of (target of w as alias)
+                        set lineStr to p & "\t" & bStr
+                        if outputText is "" then
+                            set outputText to lineStr
+                        else
+                            set outputText to outputText & linefeed & lineStr
+                        end if
                     end if
                 end try
             end repeat
@@ -464,13 +578,14 @@ final class FolderManager: ObservableObject {
 
             let cocoaFrame = extractCocoaFrame(win, primaryScreenHeight: primaryScreenHeight)
 
+            var windowPaths: [String] = []
+
             // 1. Check AXDocument URL first
             var docRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(win, kAXDocumentAttribute as CFString, &docRef) == .success,
                let docStr = docRef as? String,
                let url = URL(string: docStr), let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
-                results.append(OpenFinderWindowInfo(path: p, cocoaFrame: cocoaFrame))
-                continue
+                windowPaths.append(p)
             }
 
             // 2. Check AXProxy URL
@@ -481,25 +596,42 @@ final class FolderManager: ObservableObject {
                 var urlRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(proxyEl, kAXURLAttribute as CFString, &urlRef) == .success {
                     if let url = urlRef as? URL, let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
-                        results.append(OpenFinderWindowInfo(path: p, cocoaFrame: cocoaFrame))
-                        continue
+                        windowPaths.append(p)
                     } else if let urlStr = urlRef as? String, let url = URL(string: urlStr), let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
-                        results.append(OpenFinderWindowInfo(path: p, cocoaFrame: cocoaFrame))
-                        continue
+                        windowPaths.append(p)
                     }
                 }
             }
 
-            // 3. Deep Path Bar & AXURL Search: Search window hierarchy (bottom-up) for elements containing exact folder AXURL
+            // 3. Deep Path Bar, AXURL & Finder Tabs Search
             var titleRef: CFTypeRef?
             AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
             let rawTitle = (titleRef as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let normalizedTitle = rawTitle.precomposedStringWithCanonicalMapping
 
-            var resolvedPath: String?
-
             func searchFinderWindowPath(_ elem: AXUIElement, depth: Int) {
-                if depth > 8 || resolvedPath != nil { return }
+                if depth > 9 { return }
+
+                var roleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(elem, kAXRoleAttribute as CFString, &roleRef)
+                let role = roleRef as? String
+
+                // Check tab buttons in Finder tab bar
+                if role == "AXRadioButton" || role == "AXTab" {
+                    var tabTitleRef: CFTypeRef?
+                    AXUIElementCopyAttributeValue(elem, kAXTitleAttribute as CFString, &tabTitleRef)
+                    if let tabTitle = (tabTitleRef as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !tabTitle.isEmpty {
+                        let normTab = tabTitle.precomposedStringWithCanonicalMapping.lowercased()
+                        if let std = standardMap[normTab] {
+                            windowPaths.append(std)
+                        } else if let matched = knownRecentPaths.first(where: {
+                            URL(fileURLWithPath: $0).lastPathComponent.precomposedStringWithCanonicalMapping.lowercased() == normTab
+                        }) {
+                            windowPaths.append(matched)
+                        }
+                    }
+                }
 
                 var uRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(elem, "AXURL" as CFString, &uRef) == .success,
@@ -508,50 +640,46 @@ final class FolderManager: ObservableObject {
                     let uNorm = URL(fileURLWithPath: p)
                     // Case A: Element AXURL matches the window title directly
                     if !normalizedTitle.isEmpty && uNorm.lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
-                        resolvedPath = uNorm.path
-                        return
-                    }
-                    // Case B: Element is a file/item inside this folder
-                    if !normalizedTitle.isEmpty && uNorm.deletingLastPathComponent().lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
-                        resolvedPath = uNorm.deletingLastPathComponent().path
-                        return
-                    }
-                    // Case C: Path Bar item matches title in AXValue
-                    var valRef: CFTypeRef?
-                    AXUIElementCopyAttributeValue(elem, kAXValueAttribute as CFString, &valRef)
-                    let v = ((valRef as? String) ?? "").precomposedStringWithCanonicalMapping
-                    if !normalizedTitle.isEmpty && (v == normalizedTitle || URL(fileURLWithPath: v).lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle) {
-                        resolvedPath = p
-                        return
+                        windowPaths.append(uNorm.path)
+                    } else if !normalizedTitle.isEmpty && uNorm.deletingLastPathComponent().lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
+                        windowPaths.append(uNorm.deletingLastPathComponent().path)
+                    } else {
+                        var isDir: ObjCBool = false
+                        if FileManager.default.fileExists(atPath: p, isDirectory: &isDir) && isDir.boolValue {
+                            windowPaths.append(p)
+                        }
                     }
                 }
 
                 var kidsRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(elem, kAXChildrenAttribute as CFString, &kidsRef) == .success,
                    let kids = kidsRef as? [AXUIElement] {
-                    // Traverse in reverse order because Path Bar is positioned at the bottom of the Finder window
                     for child in kids.reversed() {
                         searchFinderWindowPath(child, depth: depth + 1)
-                        if resolvedPath != nil { return }
                     }
                 }
             }
 
             searchFinderWindowPath(win, depth: 0)
 
-            if let path = resolvedPath {
-                results.append(OpenFinderWindowInfo(path: path, cocoaFrame: cocoaFrame))
-                continue
-            }
-
             // 4. Fallback: match window title against standard folders or known recent paths
             if !normalizedTitle.isEmpty, normalizedTitle.lowercased() != "recents" {
                 if let stdPath = standardMap[normalizedTitle.lowercased()] {
-                    results.append(OpenFinderWindowInfo(path: stdPath, cocoaFrame: cocoaFrame))
+                    windowPaths.append(stdPath)
                 } else if let matched = knownRecentPaths.first(where: {
                     URL(fileURLWithPath: $0).lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle
                 }) {
-                    results.append(OpenFinderWindowInfo(path: matched, cocoaFrame: cocoaFrame))
+                    windowPaths.append(matched)
+                }
+            }
+
+            // Deduplicate paths found for this window while preserving order
+            var seenInWindow = Set<String>()
+            for path in windowPaths {
+                let std = FolderItem.standardizePath(path)
+                if !seenInWindow.contains(std) {
+                    seenInWindow.insert(std)
+                    results.append(OpenFinderWindowInfo(path: std, cocoaFrame: cocoaFrame))
                 }
             }
         }
