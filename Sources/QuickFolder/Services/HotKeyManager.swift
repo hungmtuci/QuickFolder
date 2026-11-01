@@ -111,11 +111,24 @@ final class HotKeyManager: ObservableObject {
 
     private var toggleHotKeyRef: EventHotKeyRef?
     private var finderJumpHotKeyRef: EventHotKeyRef?
+    private var registeredFinderJumpPreset: FinderJumpShortcutPreset?
     private var eventHandlerRef: EventHandlerRef?
     private var globalKeyMonitor: Any?
     private var localKeyMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
     private var isStarted = false
+
+    private static let numberKeyCodes: [UInt16: Int] = [
+        UInt16(kVK_ANSI_1): 0,
+        UInt16(kVK_ANSI_2): 1,
+        UInt16(kVK_ANSI_3): 2,
+        UInt16(kVK_ANSI_4): 3,
+        UInt16(kVK_ANSI_5): 4,
+        UInt16(kVK_ANSI_6): 5,
+        UInt16(kVK_ANSI_7): 6,
+        UInt16(kVK_ANSI_8): 7,
+        UInt16(kVK_ANSI_9): 8
+    ]
 
     private init() {
         let savedToggle = UserDefaults.standard.string(forKey: togglePresetKey) ?? ToggleShortcutPreset.cmdShiftD.rawValue
@@ -188,14 +201,23 @@ final class HotKeyManager: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Monitor Option+1..9 only when the floating panel is visible
+        // Monitor Option+1..9 globally — pre-filter modifier flags before spawning MainActor Task so normal typing costs 0 allocations
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.option],
+                  Self.numberKeyCodes[event.keyCode] != nil else { return }
+            let keyCode = event.keyCode
             Task { @MainActor in
-                self?.handleOptionNumberEvent(event)
+                guard let self, FloatingPanelController.shared.isPanelVisible,
+                      let index = Self.numberKeyCodes[keyCode] else { return }
+                self.onSelectQuickIndex?(index)
             }
         }
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if let self = self, self.handleOptionNumberEvent(event) {
+            guard let self = self else { return event }
+            if self.handleOptionNumberEvent(event) {
+                return nil
+            }
+            if self.handlePanelNavigationKey(event) {
                 return nil
             }
             return event
@@ -233,7 +255,10 @@ final class HotKeyManager: ObservableObject {
         }
 
         if shouldBeRegistered {
-            // Re-register cleanly if not registered (or if preset changed)
+            // Skip redundant Carbon registration if already bound to the same preset
+            if finderJumpHotKeyRef != nil, registeredFinderJumpPreset == finderJumpPreset {
+                return
+            }
             if let ref = finderJumpHotKeyRef {
                 UnregisterEventHotKey(ref)
                 finderJumpHotKeyRef = nil
@@ -247,11 +272,13 @@ final class HotKeyManager: ObservableObject {
                 0,
                 &finderJumpHotKeyRef
             )
+            registeredFinderJumpPreset = finderJumpPreset
         } else {
             if let ref = finderJumpHotKeyRef {
                 UnregisterEventHotKey(ref)
                 finderJumpHotKeyRef = nil
             }
+            registeredFinderJumpPreset = nil
         }
     }
 
@@ -261,22 +288,32 @@ final class HotKeyManager: ObservableObject {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags == [.option] else { return false }
 
-        let numberKeyCodes: [UInt16: Int] = [
-            UInt16(kVK_ANSI_1): 0,
-            UInt16(kVK_ANSI_2): 1,
-            UInt16(kVK_ANSI_3): 2,
-            UInt16(kVK_ANSI_4): 3,
-            UInt16(kVK_ANSI_5): 4,
-            UInt16(kVK_ANSI_6): 5,
-            UInt16(kVK_ANSI_7): 6,
-            UInt16(kVK_ANSI_8): 7,
-            UInt16(kVK_ANSI_9): 8
-        ]
-
-        if let index = numberKeyCodes[event.keyCode] {
+        if let index = Self.numberKeyCodes[event.keyCode] {
             onSelectQuickIndex?(index)
             return true
         }
         return false
+    }
+
+    private func handlePanelNavigationKey(_ event: NSEvent) -> Bool {
+        let controller = FloatingPanelController.shared
+        guard controller.isPanelVisible, controller.isPanelKeyWindow else { return false }
+        let flags = event.modifierFlags.intersection([.command, .option, .control])
+        guard flags.isEmpty else { return false }
+
+        switch event.keyCode {
+        case 125: // Down arrow
+            controller.moveSelection(down: true)
+            return true
+        case 126: // Up arrow
+            controller.moveSelection(down: false)
+            return true
+        case 36, 76: // Return / Keypad Enter
+            return controller.confirmCurrentSelection()
+        case 53: // Escape
+            return controller.handleEscape()
+        default:
+            return false
+        }
     }
 }

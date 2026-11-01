@@ -81,6 +81,7 @@ final class FinderClickOverlayController: ObservableObject {
 
     private let enabledKey = "QuickFolder.EnableFinderClick.v1"
     private var highlightPanel: FinderHighlightPanel?
+    private var overlayHostingView: NSHostingView<FinderHighlightOverlayView>?
     private var hoveredFinderWindow: OpenFinderWindowInfo?
     private var mouseMoveMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
@@ -153,7 +154,7 @@ final class FinderClickOverlayController: ObservableObject {
         }
 
         // Convert Cocoa point to Quartz point (origin top-left of primary screen)
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 900
+        let primaryHeight = ScreenGeometry.primaryScreenHeight
         let quartzPoint = CGPoint(x: cocoaPoint.x, y: primaryHeight - cocoaPoint.y)
 
         let ignoredOverlayWinNum = highlightPanel?.windowNumber ?? -1
@@ -212,7 +213,13 @@ final class FinderClickOverlayController: ObservableObject {
             displayPath: item.displayPath,
             onSelect: selectAction
         )
-        panel.contentView = NSHostingView(rootView: rootView)
+        if let hosting = overlayHostingView {
+            hosting.rootView = rootView
+        } else {
+            let hosting = NSHostingView(rootView: rootView)
+            overlayHostingView = hosting
+            panel.contentView = hosting
+        }
         panel.setFrame(frame, display: true)
         if !panel.isVisible {
             panel.orderFrontRegardless()

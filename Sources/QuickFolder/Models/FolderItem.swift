@@ -8,32 +8,39 @@ enum FolderSource: Equatable, Hashable {
 }
 
 struct FolderItem: Identifiable, Hashable {
-    var id: String { "\(sourceTag):\(path)" }
+    private static let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+
+    let id: String
     let path: String
     let name: String
     let displayPath: String
+    let searchKey: String
     let source: FolderSource
     let lastUsed: Date
 
-    private var sourceTag: String {
-        switch source {
-        case .openFinderWindow(let idx):
-            return "finder-\(idx)"
-        case .pinned:
-            return "pinned"
-        case .recent:
-            return "recent"
-        }
-    }
-
-    init(path: String, source: FolderSource, lastUsed: Date = Date()) {
+    init(path: String, source: FolderSource, lastUsed: Date = .distantPast) {
         let standardized = FolderItem.standardizePath(path)
         self.path = standardized
         let url = URL(fileURLWithPath: standardized)
-        self.name = url.lastPathComponent.isEmpty ? standardized : url.lastPathComponent
-        self.displayPath = FolderItem.abbreviateWithTilde(standardized)
+        let resolvedName = url.lastPathComponent.isEmpty ? standardized : url.lastPathComponent
+        let resolvedDisplay = FolderItem.abbreviateWithTilde(standardized)
+        self.name = resolvedName
+        self.displayPath = resolvedDisplay
+        self.searchKey = "\(resolvedName) \(resolvedDisplay)"
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
         self.source = source
         self.lastUsed = lastUsed
+
+        let tag: String
+        switch source {
+        case .openFinderWindow(let idx):
+            tag = "finder-\(idx)"
+        case .pinned:
+            tag = "pinned"
+        case .recent:
+            tag = "recent"
+        }
+        self.id = "\(tag):\(standardized)"
     }
 
     var url: URL {
@@ -41,39 +48,26 @@ struct FolderItem: Identifiable, Hashable {
     }
 
     var icon: NSImage {
-        let img = NSWorkspace.shared.icon(forFile: path)
-        img.size = NSSize(width: 20, height: 20)
-        return img
+        FileMetadataCache.shared.icon(forPath: path, size: 20)
     }
 
-    var searchKey: String {
-        "\(name) \(displayPath)".folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+    /// Cached check (4s TTL) for smooth 60fps SwiftUI list rendering without blocking on CloudStorage I/O.
+    var existsCached: Bool {
+        FileMetadataCache.shared.directoryExistsCached(path)
     }
 
+    /// Live check performed right before navigating to guarantee directory validity.
     var existsOnDisk: Bool {
         var isDir: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+        if !exists {
+            FileMetadataCache.shared.invalidateDirectory(path)
+        }
+        return exists
     }
 
     var formattedTooltip: String {
-        var lines: [String] = [
-            "📁 \(name)",
-            "Đường dẫn: \(path)"
-        ]
-        let url = URL(fileURLWithPath: path)
-        if let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .volumeAvailableCapacityForImportantUsageKey]) {
-            if let modDate = values.contentModificationDate {
-                let df = DateFormatter()
-                df.dateStyle = .medium
-                df.timeStyle = .short
-                lines.append("Sửa đổi gần nhất: \(df.string(from: modDate))")
-            }
-            if let free = values.volumeAvailableCapacityForImportantUsage {
-                let byteCount = ByteCountFormatter.string(fromByteCount: free, countStyle: .file)
-                lines.append("Dung lượng trống ổ đĩa: \(byteCount)")
-            }
-        }
-        return lines.joined(separator: "\n")
+        FileMetadataCache.shared.formattedFolderTooltip(name: name, path: path)
     }
 
     static func standardizePath(_ rawPath: String) -> String {
@@ -86,12 +80,11 @@ struct FolderItem: Identifiable, Hashable {
     }
 
     static func abbreviateWithTilde(_ fullPath: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if fullPath == home {
+        if fullPath == homePath {
             return "~"
         }
-        if fullPath.hasPrefix(home + "/") {
-            return "~" + fullPath.dropFirst(home.count)
+        if fullPath.hasPrefix(homePath + "/") {
+            return "~" + fullPath.dropFirst(homePath.count)
         }
         return fullPath
     }

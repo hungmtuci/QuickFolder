@@ -41,6 +41,7 @@ final class SavePanelDetector: ObservableObject {
     private weak var inProcessTestPanel: NSSavePanel?
     private let workerQueue = DispatchQueue(label: "com.hunglx.QuickFolder.SavePanelDetector", qos: .userInitiated)
     private var isPollingInFlight = false
+    private var trailingPollTask: Task<Void, Never>?
     private var lastAutoJumpedSessionKey: String?
 
     private init() {
@@ -114,10 +115,12 @@ final class SavePanelDetector: ObservableObject {
 
     fileprivate func handleAXEvent() {
         pollNow()
-        // Re-check once after 120ms to catch sheet slide-in final bounds
-        Task { @MainActor in
+        // Coalesce trailing re-check (120ms) to catch final sheet slide-in bounds without Task pile-up during 60fps window drags
+        trailingPollTask?.cancel()
+        trailingPollTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
-            self.pollNow()
+            guard !Task.isCancelled else { return }
+            self?.pollNow()
         }
     }
 
@@ -201,7 +204,7 @@ final class SavePanelDetector: ObservableObject {
         let frontApp = NSWorkspace.shared.frontmostApplication
         let frontPID = frontApp?.processIdentifier
         let prevPID = self.lastTargetPID
-        let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1440
+        let primaryScreenHeight = ScreenGeometry.primaryScreenHeight
         let excludedSnapshot = self.excludedBundleIDs
 
         // Cache bundleIDs of running apps on MainActor
@@ -516,6 +519,21 @@ final class SavePanelDetector: ObservableObject {
         return isDialogConfirmedSaveOrOpen(sheet)
     }
 
+    nonisolated private static let fileActionTitles: Set<String> = [
+        "save", "open", "choose", "choose folder", "export", "import", "upload", "select",
+        "lưu", "mở", "chọn", "chọn thư mục", "xuất", "nhập", "tải lên"
+    ]
+    nonisolated private static let cancelTitles: Set<String> = ["cancel", "huỷ", "hủy", "bỏ qua"]
+    nonisolated private static let newFolderTitles: Set<String> = [
+        "new folder", "new folder…", "new folder...",
+        "thư mục mới", "thư mục mới…", "thư mục mới...",
+        "create folder", "tạo thư mục"
+    ]
+    nonisolated private static let fileFieldLabels: Set<String> = [
+        "save as:", "save as", "where:", "export as:", "file name:",
+        "lưu thành:", "lưu dưới dạng:", "vị trí:", "tên tệp:", "tên file:"
+    ]
+
     nonisolated private static func isDialogConfirmedSaveOrOpen(_ dialog: AXUIElement) -> Bool {
         let ident = copyString(dialog, attribute: "AXIdentifier") ?? ""
         if isOfficialSaveOpenIdentifier(ident) {
@@ -538,21 +556,6 @@ final class SavePanelDetector: ObservableObject {
         var hasColumnBrowser = false
         var hasNewFolderButton = false
         var hasFileFieldLabel = false
-
-        let fileActionTitles: Set<String> = [
-            "save", "open", "choose", "choose folder", "export", "import", "upload", "select",
-            "lưu", "mở", "chọn", "chọn thư mục", "xuất", "nhập", "tải lên"
-        ]
-        let cancelTitles: Set<String> = ["cancel", "huỷ", "hủy", "bỏ qua"]
-        let newFolderTitles: Set<String> = [
-            "new folder", "new folder…", "new folder...",
-            "thư mục mới", "thư mục mới…", "thư mục mới...",
-            "create folder", "tạo thư mục"
-        ]
-        let fileFieldLabels: Set<String> = [
-            "save as:", "save as", "where:", "export as:", "file name:",
-            "lưu thành:", "lưu dưới dạng:", "vị trí:", "tên tệp:", "tên file:"
-        ]
 
         while !queue.isEmpty && visited < maxVisited {
             let (elem, depth) = queue.removeFirst()

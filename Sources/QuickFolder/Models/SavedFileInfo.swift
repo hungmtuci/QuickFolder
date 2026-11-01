@@ -8,34 +8,31 @@ struct SavedFileInfo: Identifiable, Hashable, Sendable {
     let parentPath: String
     let modificationDate: Date
     let fileSize: Int64
+    let formattedDate: String
+    let formattedSize: String
+
+    init(
+        name: String,
+        path: String,
+        parentPath: String,
+        modificationDate: Date,
+        fileSize: Int64
+    ) {
+        self.name = name
+        self.path = path
+        self.parentPath = parentPath
+        self.modificationDate = modificationDate
+        self.fileSize = fileSize
+        self.formattedDate = FileMetadataCache.shared.formattedRelativeDate(modificationDate)
+        self.formattedSize = ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
+    }
 
     var url: URL {
         URL(fileURLWithPath: path)
     }
 
-    var formattedDate: String {
-        let df = DateFormatter()
-        if Calendar.current.isDateInToday(modificationDate) {
-            df.timeStyle = .short
-            return "Hôm nay \(df.string(from: modificationDate))"
-        } else if Calendar.current.isDateInYesterday(modificationDate) {
-            df.timeStyle = .short
-            return "Hôm qua \(df.string(from: modificationDate))"
-        } else {
-            df.dateStyle = .short
-            df.timeStyle = .short
-            return df.string(from: modificationDate)
-        }
-    }
-
-    var formattedSize: String {
-        ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
-    }
-
     var icon: NSImage {
-        let img = NSWorkspace.shared.icon(forFile: path)
-        img.size = NSSize(width: 20, height: 20)
-        return img
+        FileMetadataCache.shared.icon(forPath: path, size: 20)
     }
 
     var existsOnDisk: Bool {

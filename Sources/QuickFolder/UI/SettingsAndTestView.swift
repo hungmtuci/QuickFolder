@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct SettingsAndTestView: View {
     @ObservedObject var folderManager = FolderManager.shared
@@ -528,7 +529,7 @@ struct SettingsAndTestView: View {
                 .padding(.vertical, 4)
             } else {
                 VStack(spacing: 6) {
-                    ForEach(Array(detector.excludedBundleIDs), id: \.self) { bundleID in
+                    ForEach(detector.excludedBundleIDs.sorted(), id: \.self) { bundleID in
                         excludedAppRow(bundleID: bundleID)
                     }
                 }
@@ -542,8 +543,14 @@ struct SettingsAndTestView: View {
     private func excludedAppRow(bundleID: String) -> some View {
         let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
         let appName = appURL?.deletingPathExtension().lastPathComponent ?? bundleID
-        let icon = appURL.map { NSWorkspace.shared.icon(forFile: $0.path) } ?? NSWorkspace.shared.icon(for: .application)
-        icon.size = NSSize(width: 18, height: 18)
+        let icon: NSImage = {
+            if let appURL {
+                return FileMetadataCache.shared.icon(forPath: appURL.path, size: 18)
+            }
+            let fallback = NSWorkspace.shared.icon(for: .application)
+            fallback.size = NSSize(width: 18, height: 18)
+            return fallback
+        }()
 
         return HStack(spacing: 8) {
             Image(nsImage: icon)

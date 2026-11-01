@@ -14,8 +14,13 @@ final class FolderManager: ObservableObject {
 
     @Published var openFinderFolders: [FolderItem] = []
     @Published var openFinderWindowInfos: [OpenFinderWindowInfo] = []
+    @Published var favoriteFolders: [FolderItem] = []
     @Published var recentFolders: [FolderItem] = []
-    @Published var pinnedPaths: [String] = []
+    @Published var pinnedPaths: [String] = [] {
+        didSet {
+            pinnedPathSet = Set(pinnedPaths)
+        }
+    }
     @Published var perAppDefaults: [String: String] = [:]
     @Published var recentSavedFiles: [SavedFileInfo] = []
     @Published var finderAutomationStatus: PermissionStatus = .unknown
@@ -38,8 +43,11 @@ final class FolderManager: ObservableObject {
     private let autoJumpAppDefaultKey = "QuickFolder.AutoJumpAppDefault.v1"
     private let maxRecentCount = 25
     private var storedRecents: [StoredRecentFolder] = []
+    private var pinnedPathSet: Set<String> = []
     private var pollTimer: Timer?
     private var isRefreshingFinder = false
+    private var isRefreshingSavedFiles = false
+    private var lastSavedFilesRefreshTime: TimeInterval = 0
 
     private init() {
         self.autoJumpToAppDefault = UserDefaults.standard.bool(forKey: autoJumpAppDefaultKey)
@@ -74,10 +82,11 @@ final class FolderManager: ObservableObject {
     }
 
     func refreshNow() {
+        refreshRecentSavedFiles(force: false)
         guard !isRefreshingFinder else { return }
         isRefreshingFinder = true
         let knownPaths = storedRecents.map(\.path) + pinnedPaths
-        let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? 900
+        let primaryScreenHeight = ScreenGeometry.primaryScreenHeight
 
         Task.detached(priority: .userInitiated) {
             let result = Self.fetchOpenFinderWindows(
@@ -88,11 +97,16 @@ final class FolderManager: ObservableObject {
                 self.isRefreshingFinder = false
                 switch result {
                 case .success(let infos):
-                    self.finderAutomationStatus = .granted
+                    if self.finderAutomationStatus != .granted {
+                        self.finderAutomationStatus = .granted
+                    }
                     self.recordSeenPaths(infos.map(\.path))
                     self.rebuildPublishedLists(openInfos: infos)
                 case .failure(let err):
-                    self.finderAutomationStatus = .denied(err.message)
+                    let newStatus: PermissionStatus = .denied(err.message)
+                    if self.finderAutomationStatus != newStatus {
+                        self.finderAutomationStatus = newStatus
+                    }
                     self.rebuildPublishedLists(openInfos: [])
                 }
             }
@@ -139,8 +153,10 @@ final class FolderManager: ObservableObject {
     }
 
     func isPinned(_ path: String) -> Bool {
-        let std = FolderItem.standardizePath(path)
-        return pinnedPaths.contains(std)
+        if pinnedPathSet.contains(path) {
+            return true
+        }
+        return pinnedPathSet.contains(FolderItem.standardizePath(path))
     }
 
     func togglePin(_ path: String) {
@@ -169,6 +185,9 @@ final class FolderManager: ObservableObject {
         storedRecents.removeAll { item in
             var isDir: ObjCBool = false
             let exists = FileManager.default.fileExists(atPath: item.path, isDirectory: &isDir) && isDir.boolValue
+            if !exists {
+                FileMetadataCache.shared.invalidateDirectory(item.path)
+            }
             return !exists
         }
         if storedRecents.count != initialRecentsCount {
@@ -179,6 +198,9 @@ final class FolderManager: ObservableObject {
         pinnedPaths.removeAll { path in
             var isDir: ObjCBool = false
             let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+            if !exists {
+                FileMetadataCache.shared.invalidateDirectory(path)
+            }
             return !exists
         }
         if pinnedPaths.count != initialPinnedCount {
@@ -199,7 +221,16 @@ final class FolderManager: ObservableObject {
     }
 
     /// Refresh recent saved files across key user locations (Downloads, Desktop, Documents, recent folders)
-    func refreshRecentSavedFiles() {
+    func refreshRecentSavedFiles(force: Bool = true) {
+        guard !isRefreshingSavedFiles else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if !force && lastSavedFilesRefreshTime > 0 && (now - lastSavedFilesRefreshTime) < 20.0 {
+            return
+        }
+        isRefreshingSavedFiles = true
+        lastSavedFilesRefreshTime = now
+        let extraRecents = storedRecents.prefix(5).map(\.path)
+
         Task.detached(priority: .utility) {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             var targetFolders = [
@@ -207,9 +238,6 @@ final class FolderManager: ObservableObject {
                 "\(home)/Desktop",
                 "\(home)/Documents"
             ]
-            let extraRecents = await MainActor.run {
-                self.storedRecents.prefix(5).map(\.path)
-            }
             targetFolders.append(contentsOf: extraRecents)
 
             var collected: [SavedFileInfo] = []
@@ -221,17 +249,25 @@ final class FolderManager: ObservableObject {
                 guard let enumerator = fm.enumerator(
                     at: folderURL,
                     includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
-                    options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+                    options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants, .skipsPackageDescendants]
                 ) else { continue }
 
+                var scannedInFolder = 0
                 while let fileURL = enumerator.nextObject() as? URL {
+                    scannedInFolder += 1
+                    if scannedInFolder > 800 { break } // Guard against massive directories
+
                     guard let vals = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
                           vals.isRegularFile == true,
                           let modDate = vals.contentModificationDate,
                           modDate > threeDaysAgo else { continue }
 
                     let name = fileURL.lastPathComponent
-                    guard !name.hasPrefix("."), !name.hasSuffix(".download"), !name.hasSuffix(".crdownload") else { continue }
+                    let lower = name.lowercased()
+                    guard !name.hasPrefix("."),
+                          !lower.hasSuffix(".download"),
+                          !lower.hasSuffix(".crdownload"),
+                          !lower.hasSuffix(".part") else { continue }
 
                     collected.append(
                         SavedFileInfo(
@@ -249,7 +285,10 @@ final class FolderManager: ObservableObject {
             let trimmed = Array(collected.prefix(20))
 
             await MainActor.run {
-                self.recentSavedFiles = trimmed
+                self.isRefreshingSavedFiles = false
+                if self.recentSavedFiles != trimmed {
+                    self.recentSavedFiles = trimmed
+                }
             }
         }
     }
@@ -300,7 +339,9 @@ final class FolderManager: ObservableObject {
             guard isDirectoryExists(std) else { return nil }
             return OpenFinderWindowInfo(path: std, cocoaFrame: info.cocoaFrame)
         }
-        self.openFinderWindowInfos = validInfos
+        if self.openFinderWindowInfos != validInfos {
+            self.openFinderWindowInfos = validInfos
+        }
 
         // 1. Deduplicate open Finder windows while preserving front-to-back window order
         var seenOpen = Set<String>()
@@ -315,17 +356,31 @@ final class FolderManager: ObservableObject {
                 )
             )
         }
-        self.openFinderFolders = openItems
+        if self.openFinderFolders != openItems {
+            self.openFinderFolders = openItems
+        }
 
-        // 2. Build Recent + Pinned list (excluding paths already open in Finder so there is no duplication)
+        // 2. Build dedicated Favorites list (always includes all valid pinned folders even if currently open in Finder)
+        var favorites: [FolderItem] = []
+        var seenFav = Set<String>()
+        for pinned in pinnedPaths {
+            let std = FolderItem.standardizePath(pinned)
+            guard isDirectoryExists(std), !seenFav.contains(std) else { continue }
+            seenFav.insert(std)
+            favorites.append(FolderItem(path: std, source: .pinned))
+        }
+        if self.favoriteFolders != favorites {
+            self.favoriteFolders = favorites
+        }
+
+        // 3. Build Recent + Pinned list (excluding paths already open in Finder so there is no duplication in "All" view)
         var recents: [FolderItem] = []
         var seenRecent = seenOpen
 
-        for pinned in pinnedPaths {
-            let std = FolderItem.standardizePath(pinned)
-            guard isDirectoryExists(std), !seenRecent.contains(std) else { continue }
-            seenRecent.insert(std)
-            recents.append(FolderItem(path: std, source: .pinned))
+        for fav in favorites {
+            guard !seenRecent.contains(fav.path) else { continue }
+            seenRecent.insert(fav.path)
+            recents.append(fav)
         }
 
         for item in storedRecents {
@@ -335,7 +390,9 @@ final class FolderManager: ObservableObject {
             recents.append(FolderItem(path: std, source: .recent, lastUsed: item.lastUsed))
         }
 
-        self.recentFolders = recents
+        if self.recentFolders != recents {
+            self.recentFolders = recents
+        }
     }
 
     private func loadPersistedData() {
@@ -421,9 +478,7 @@ final class FolderManager: ObservableObject {
            lower.hasPrefix("/system/library/") {
             return false
         }
-        var isDir: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
-        return exists && isDir.boolValue
+        return FileMetadataCache.shared.directoryExistsCached(path)
     }
 
     // MARK: - Finder Window Query (Accessibility + AppleScript)
@@ -578,102 +633,153 @@ final class FolderManager: ObservableObject {
 
             let cocoaFrame = extractCocoaFrame(win, primaryScreenHeight: primaryScreenHeight)
 
-            var windowPaths: [String] = []
+            var activePath: String?
 
-            // 1. Check AXDocument URL first
+            // 1. Check AXDocument URL first (0.2ms fast path)
             var docRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(win, kAXDocumentAttribute as CFString, &docRef) == .success,
                let docStr = docRef as? String,
                let url = URL(string: docStr), let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
-                windowPaths.append(p)
+                activePath = p
             }
 
-            // 2. Check AXProxy URL
-            var proxyRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(win, kAXProxyAttribute as CFString, &proxyRef) == .success,
-               let proxy = proxyRef {
-                let proxyEl = proxy as! AXUIElement
-                var urlRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(proxyEl, kAXURLAttribute as CFString, &urlRef) == .success {
-                    if let url = urlRef as? URL, let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
-                        windowPaths.append(p)
-                    } else if let urlStr = urlRef as? String, let url = URL(string: urlStr), let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
-                        windowPaths.append(p)
+            // 2. Check AXProxy URL (0.2ms fast path)
+            if activePath == nil {
+                var proxyRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(win, kAXProxyAttribute as CFString, &proxyRef) == .success,
+                   let proxy = proxyRef {
+                    let proxyEl = proxy as! AXUIElement
+                    var urlRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(proxyEl, kAXURLAttribute as CFString, &urlRef) == .success {
+                        if let url = urlRef as? URL, let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
+                            activePath = p
+                        } else if let urlStr = urlRef as? String, let url = URL(string: urlStr), let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
+                            activePath = p
+                        }
                     }
                 }
             }
 
-            // 3. Deep Path Bar, AXURL & Finder Tabs Search
             var titleRef: CFTypeRef?
             AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
             let rawTitle = (titleRef as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let normalizedTitle = rawTitle.precomposedStringWithCanonicalMapping
 
-            func searchFinderWindowPath(_ elem: AXUIElement, depth: Int) {
-                if depth > 9 { return }
+            // 3. Only if AXDocument & AXProxy were nil (e.g. CloudStorage / PathBar-only window), search bottom-up with strict title matching & early exit
+            if activePath == nil && !normalizedTitle.isEmpty {
+                func resolveActivePathFromHierarchy(_ elem: AXUIElement, depth: Int) {
+                    if depth > 8 || activePath != nil { return }
 
-                var roleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(elem, kAXRoleAttribute as CFString, &roleRef)
-                let role = roleRef as? String
+                    var uRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(elem, "AXURL" as CFString, &uRef) == .success,
+                       let u = uRef as? URL ?? (uRef as? String).flatMap(URL.init(string:)),
+                       let p = (u as NSURL).filePathURL?.path, !p.isEmpty {
+                        let uNorm = URL(fileURLWithPath: p)
+                        if uNorm.lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
+                            activePath = uNorm.path
+                            return
+                        }
+                        if uNorm.deletingLastPathComponent().lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
+                            activePath = uNorm.deletingLastPathComponent().path
+                            return
+                        }
+                        var valRef: CFTypeRef?
+                        AXUIElementCopyAttributeValue(elem, kAXValueAttribute as CFString, &valRef)
+                        let v = ((valRef as? String) ?? "").precomposedStringWithCanonicalMapping
+                        if v == normalizedTitle || URL(fileURLWithPath: v).lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
+                            activePath = p
+                            return
+                        }
+                    }
 
-                // Check tab buttons in Finder tab bar
-                if role == "AXRadioButton" || role == "AXTab" {
-                    var tabTitleRef: CFTypeRef?
-                    AXUIElementCopyAttributeValue(elem, kAXTitleAttribute as CFString, &tabTitleRef)
-                    if let tabTitle = (tabTitleRef as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !tabTitle.isEmpty {
-                        let normTab = tabTitle.precomposedStringWithCanonicalMapping.lowercased()
-                        if let std = standardMap[normTab] {
-                            windowPaths.append(std)
-                        } else if let matched = knownRecentPaths.first(where: {
-                            URL(fileURLWithPath: $0).lastPathComponent.precomposedStringWithCanonicalMapping.lowercased() == normTab
-                        }) {
-                            windowPaths.append(matched)
+                    var kidsRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(elem, kAXChildrenAttribute as CFString, &kidsRef) == .success,
+                       let kids = kidsRef as? [AXUIElement] {
+                        for child in kids.reversed() {
+                            resolveActivePathFromHierarchy(child, depth: depth + 1)
+                            if activePath != nil { return }
                         }
                     }
                 }
+                resolveActivePathFromHierarchy(win, depth: 0)
+            }
 
-                var uRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(elem, "AXURL" as CFString, &uRef) == .success,
-                   let u = uRef as? URL ?? (uRef as? String).flatMap(URL.init(string:)),
-                   let p = (u as NSURL).filePathURL?.path, !p.isEmpty {
-                    let uNorm = URL(fileURLWithPath: p)
-                    // Case A: Element AXURL matches the window title directly
-                    if !normalizedTitle.isEmpty && uNorm.lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
-                        windowPaths.append(uNorm.path)
-                    } else if !normalizedTitle.isEmpty && uNorm.deletingLastPathComponent().lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle {
-                        windowPaths.append(uNorm.deletingLastPathComponent().path)
-                    } else {
-                        var isDir: ObjCBool = false
-                        if FileManager.default.fileExists(atPath: p, isDirectory: &isDir) && isDir.boolValue {
-                            windowPaths.append(p)
+            // 4. Fallback: match window title against standard folders or known recent paths
+            if activePath == nil, !normalizedTitle.isEmpty, normalizedTitle.lowercased() != "recents" {
+                if let stdPath = standardMap[normalizedTitle.lowercased()] {
+                    activePath = stdPath
+                } else if let matched = knownRecentPaths.first(where: {
+                    URL(fileURLWithPath: $0).lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle
+                }) {
+                    activePath = matched
+                }
+            }
+
+            var windowPaths: [String] = []
+            if let activePath {
+                windowPaths.append(activePath)
+            }
+
+            // 5. Targeted shallow scan (depth <= 2) ONLY for Finder's AXTabGroup to recognize background tabs without walking file lists
+            let siblingParent = activePath.map { URL(fileURLWithPath: $0).deletingLastPathComponent() }
+            func collectTabBarPaths(_ elem: AXUIElement, depth: Int) {
+                if depth > 2 { return }
+                var rRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(elem, kAXRoleAttribute as CFString, &rRef)
+                let r = rRef as? String ?? ""
+
+                if r == "AXTabGroup" {
+                    var tabsRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(elem, kAXChildrenAttribute as CFString, &tabsRef) == .success,
+                       let tabs = tabsRef as? [AXUIElement] {
+                        for tab in tabs {
+                            var tabURLRef: CFTypeRef?
+                            if AXUIElementCopyAttributeValue(tab, "AXURL" as CFString, &tabURLRef) == .success,
+                               let u = tabURLRef as? URL ?? (tabURLRef as? String).flatMap(URL.init(string:)),
+                               let p = (u as NSURL).filePathURL?.path, !p.isEmpty {
+                                windowPaths.append(p)
+                                continue
+                            }
+
+                            var tabTitleRef: CFTypeRef?
+                            AXUIElementCopyAttributeValue(tab, kAXTitleAttribute as CFString, &tabTitleRef)
+                            guard let tabTitle = (tabTitleRef as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  !tabTitle.isEmpty else { continue }
+                            let normTab = tabTitle.precomposedStringWithCanonicalMapping
+                            let lowerTab = normTab.lowercased()
+                            if lowerTab == "recents" { continue }
+
+                            if let std = standardMap[lowerTab] {
+                                windowPaths.append(std)
+                            } else if let parent = siblingParent {
+                                let candidate = parent.appendingPathComponent(normTab).path
+                                var isDir: ObjCBool = false
+                                if FileManager.default.fileExists(atPath: candidate, isDirectory: &isDir), isDir.boolValue {
+                                    windowPaths.append(candidate)
+                                    continue
+                                }
+                            }
+                            if let matched = knownRecentPaths.first(where: {
+                                URL(fileURLWithPath: $0).lastPathComponent.precomposedStringWithCanonicalMapping.lowercased() == lowerTab
+                            }) {
+                                windowPaths.append(matched)
+                            }
                         }
                     }
+                    return
                 }
 
                 var kidsRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(elem, kAXChildrenAttribute as CFString, &kidsRef) == .success,
                    let kids = kidsRef as? [AXUIElement] {
-                    for child in kids.reversed() {
-                        searchFinderWindowPath(child, depth: depth + 1)
+                    for child in kids.prefix(12) {
+                        collectTabBarPaths(child, depth: depth + 1)
                     }
                 }
             }
+            collectTabBarPaths(win, depth: 0)
 
-            searchFinderWindowPath(win, depth: 0)
-
-            // 4. Fallback: match window title against standard folders or known recent paths
-            if !normalizedTitle.isEmpty, normalizedTitle.lowercased() != "recents" {
-                if let stdPath = standardMap[normalizedTitle.lowercased()] {
-                    windowPaths.append(stdPath)
-                } else if let matched = knownRecentPaths.first(where: {
-                    URL(fileURLWithPath: $0).lastPathComponent.precomposedStringWithCanonicalMapping == normalizedTitle
-                }) {
-                    windowPaths.append(matched)
-                }
-            }
-
-            // Deduplicate paths found for this window while preserving order
+            // Deduplicate paths found for this window while preserving active-tab-first order
             var seenInWindow = Set<String>()
             for path in windowPaths {
                 let std = FolderItem.standardizePath(path)

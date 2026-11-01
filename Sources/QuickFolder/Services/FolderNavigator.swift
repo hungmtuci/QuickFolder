@@ -10,6 +10,7 @@ final class FolderNavigator: ObservableObject {
 
     /// Weak reference to in-process test save panel if open
     weak var activeTestSavePanel: NSSavePanel?
+    private var bannerDismissTask: Task<Void, Never>?
 
     private init() {}
 
@@ -203,12 +204,11 @@ final class FolderNavigator: ObservableObject {
 
     func showBanner(_ text: String) {
         self.statusBannerMessage = text
-        let captured = text
-        Task { @MainActor in
+        bannerDismissTask?.cancel()
+        bannerDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 2_200_000_000)
-            if self.statusBannerMessage == captured {
-                self.statusBannerMessage = nil
-            }
+            guard !Task.isCancelled else { return }
+            self?.statusBannerMessage = nil
         }
     }
 
@@ -224,7 +224,7 @@ final class FolderNavigator: ObservableObject {
             var winsRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &winsRef) == .success,
                let wins = winsRef as? [AXUIElement] {
-                let primaryHeight = NSScreen.screens.first?.frame.height ?? 900
+                let primaryHeight = ScreenGeometry.primaryScreenHeight
                 for win in wins {
                     if let f = extractCocoaFrame(win, primaryScreenHeight: primaryHeight),
                        abs(f.origin.x - targetFrame.origin.x) < 25 && abs(f.size.width - targetFrame.size.width) < 25 {
@@ -617,22 +617,6 @@ final class FolderNavigator: ObservableObject {
         usleep(15_000)
         if let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) {
             keyUp.flags = flags
-            keyUp.post(tap: .cghidEventTap)
-        }
-    }
-
-    nonisolated private static func postUnicodeString(_ string: String) {
-        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
-        let utf16 = Array(string.utf16)
-        guard !utf16.isEmpty else { return }
-
-        if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) {
-            keyDown.flags = []
-            keyDown.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-            keyDown.post(tap: .cghidEventTap)
-        }
-        if let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
-            keyUp.flags = []
             keyUp.post(tap: .cghidEventTap)
         }
     }

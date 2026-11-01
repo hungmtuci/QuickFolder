@@ -110,9 +110,7 @@ final class SubfolderMenuPresenter: NSObject, NSMenuDelegate {
                     action: #selector(selectFolderAction(_:)),
                     keyEquivalent: ""
                 )
-                let icon = NSWorkspace.shared.icon(forFile: childPath)
-                icon.size = NSSize(width: 16, height: 16)
-                item.image = icon
+                item.image = FileMetadataCache.shared.icon(forPath: childPath, size: 16)
                 item.representedObject = childPath
                 item.target = self
 
@@ -241,7 +239,7 @@ final class SubfolderMenuPresenter: NSObject, NSMenuDelegate {
         ) else {
             return false
         }
-        for case let childURL as URL in enumerator {
+        while let childURL = enumerator.nextObject() as? URL {
             if let vals = try? childURL.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]),
                vals.isDirectory == true,
                vals.isPackage != true {

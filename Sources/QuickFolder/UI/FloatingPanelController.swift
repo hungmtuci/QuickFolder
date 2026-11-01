@@ -74,7 +74,18 @@ enum SidebarTab: String, CaseIterable {
 final class FloatingPanelController: ObservableObject {
     static let shared = FloatingPanelController()
 
-    @Published var searchText: String = ""
+    @Published var searchText: String = "" {
+        didSet {
+            guard searchText != oldValue else { return }
+            let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                selectedIndex = nil
+            } else {
+                let count = currentVisibleItems().count
+                selectedIndex = count > 0 ? 0 : nil
+            }
+        }
+    }
     @Published var hoveredID: String?
     @Published var selectedIndex: Int? = nil
     @Published var isDropTargeted: Bool = false
@@ -183,8 +194,7 @@ final class FloatingPanelController: ObservableObject {
         case .openFinder:
             return fm.filtered(fm.openFinderFolders, query: searchText)
         case .favorites:
-            let favs = fm.recentFolders.filter { fm.isPinned($0.path) }
-            return fm.filtered(favs, query: searchText)
+            return fm.filtered(fm.favoriteFolders, query: searchText)
         case .recents:
             return fm.filtered(fm.recentFolders, query: searchText)
         case .recentFiles:
@@ -273,11 +283,13 @@ final class FloatingPanelController: ObservableObject {
             isCompactBezel = false
             if let active = SavePanelDetector.shared.activePanel {
                 positionBeside(savePanelFrame: active.cocoaFrame)
+                showPanel()
             } else {
                 isManuallySummoned = true
                 positionNearMouseOrCenter()
+                showPanel()
+                enableSearchFieldFocus()
             }
-            showPanel()
         }
     }
 
@@ -291,6 +303,10 @@ final class FloatingPanelController: ObservableObject {
 
     var isPanelVisible: Bool {
         panel?.isVisible ?? false
+    }
+
+    var isPanelKeyWindow: Bool {
+        panel?.isKeyWindow ?? false
     }
 
     private func showPanel() {

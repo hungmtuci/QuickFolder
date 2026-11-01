@@ -31,30 +31,39 @@ struct FloatingPanelView: View {
     }
 
     private var filteredFavorites: [FolderItem] {
-        let favs = folderManager.recentFolders.filter { folderManager.isPinned($0.path) }
-        return folderManager.filtered(favs, query: panelController.searchText)
+        folderManager.filtered(folderManager.favoriteFolders, query: panelController.searchText)
     }
 
     private var filteredRecent: [FolderItem] {
         folderManager.filtered(folderManager.recentFolders, query: panelController.searchText)
     }
 
-    private var allVisibleItems: [FolderItem] {
-        panelController.currentVisibleItems()
-    }
-
-    /// Maps each visible FolderItem.id to its 1-based quick shortcut number (1...9)
-    private var quickIndexMap: [String: Int] {
-        let all = filteredOpen + filteredRecent
-        var map: [String: Int] = [:]
-        for (idx, item) in all.prefix(9).enumerated() {
-            map[item.id] = idx + 1
-        }
-        return map
-    }
-
     var body: some View {
-        HStack(spacing: 0) {
+        let openList = filteredOpen
+        let recentList = filteredRecent
+        let favList = filteredFavorites
+
+        let visibleList: [FolderItem] = {
+            switch panelController.selectedTab {
+            case .all: return openList + recentList
+            case .openFinder: return openList
+            case .favorites: return favList
+            case .recents: return recentList
+            case .recentFiles: return []
+            }
+        }()
+
+        var indexByID: [String: Int] = [:]
+        var shortcutByID: [String: Int] = [:]
+        indexByID.reserveCapacity(visibleList.count)
+        for (idx, item) in visibleList.enumerated() {
+            indexByID[item.id] = idx
+            if idx < 9 {
+                shortcutByID[item.id] = idx + 1
+            }
+        }
+
+        return HStack(spacing: 0) {
             // Vertical Icon Bezel (Default Folder X style toolbar rail)
             iconRailColumn
 
@@ -90,24 +99,35 @@ struct FloatingPanelView: View {
                         statusToast(banner)
                     }
 
-                    ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(alignment: .leading, spacing: 10) {
-                            switch panelController.selectedTab {
-                            case .all:
-                                openFinderSection
-                                recentFoldersSection
-                            case .openFinder:
-                                openFinderSection
-                            case .favorites:
-                                favoritesSection
-                            case .recents:
-                                recentFoldersSection
-                            case .recentFiles:
-                                recentFilesSection
+                    ScrollViewReader { scrollProxy in
+                        ScrollView(.vertical, showsIndicators: true) {
+                            LazyVStack(alignment: .leading, spacing: 10) {
+                                switch panelController.selectedTab {
+                                case .all:
+                                    openFinderSection(items: openList, indexByID: indexByID, shortcutByID: shortcutByID)
+                                    recentFoldersSection(items: recentList, indexByID: indexByID, shortcutByID: shortcutByID)
+                                case .openFinder:
+                                    openFinderSection(items: openList, indexByID: indexByID, shortcutByID: shortcutByID)
+                                case .favorites:
+                                    favoritesSection(items: favList, indexByID: indexByID, shortcutByID: shortcutByID)
+                                case .recents:
+                                    recentFoldersSection(items: recentList, indexByID: indexByID, shortcutByID: shortcutByID)
+                                case .recentFiles:
+                                    recentFilesSection
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                        }
+                        .onChange(of: panelController.selectedIndex) { _, newIdx in
+                            guard let newIdx, newIdx >= 0, newIdx < visibleList.count else { return }
+                            let targetID = visibleList[newIdx].id
+                            if panelController.hoveredID != targetID {
+                                withAnimation(.easeOut(duration: 0.12)) {
+                                    scrollProxy.scrollTo(targetID, anchor: .center)
+                                }
                             }
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
                     }
 
                     Divider()
@@ -631,20 +651,24 @@ struct FloatingPanelView: View {
         .padding(.top, 2)
     }
 
-    private var openFinderSection: some View {
+    private func openFinderSection(
+        items: [FolderItem],
+        indexByID: [String: Int],
+        shortcutByID: [String: Int]
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label("ĐANG MỞ TRONG FINDER", systemImage: "macwindow")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(filteredOpen.count)")
+                Text("\(items.count)")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 4)
 
-            if filteredOpen.isEmpty {
+            if items.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "info.circle")
                         .font(.system(size: 11))
@@ -656,66 +680,83 @@ struct FloatingPanelView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
             } else {
-                ForEach(filteredOpen) { item in
-                    let listIdx = allVisibleItems.firstIndex(of: item)
-                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id], listIndex: listIdx)
+                ForEach(items) { item in
+                    folderRow(
+                        item: item,
+                        shortcutIndex: shortcutByID[item.id],
+                        listIndex: indexByID[item.id]
+                    )
                 }
             }
         }
     }
 
-    private var favoritesSection: some View {
+    private func favoritesSection(
+        items: [FolderItem],
+        indexByID: [String: Int],
+        shortcutByID: [String: Int]
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label("THƯ MỤC YÊU THÍCH ĐÃ GHIM", systemImage: "heart.fill")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(filteredFavorites.count)")
+                Text("\(items.count)")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 4)
 
-            if filteredFavorites.isEmpty {
+            if items.isEmpty {
                 Text("Bấm biểu tượng ghim trên bất kỳ thư mục nào để lưu vào mục Yêu thích.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
             } else {
-                ForEach(filteredFavorites) { item in
-                    let listIdx = allVisibleItems.firstIndex(of: item)
-                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id], listIndex: listIdx)
+                ForEach(items) { item in
+                    folderRow(
+                        item: item,
+                        shortcutIndex: shortcutByID[item.id],
+                        listIndex: indexByID[item.id]
+                    )
                 }
             }
         }
     }
 
-    private var recentFoldersSection: some View {
+    private func recentFoldersSection(
+        items: [FolderItem],
+        indexByID: [String: Int],
+        shortcutByID: [String: Int]
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label("THƯ MỤC GẦN ĐÂY & ĐÃ GHIM", systemImage: "clock.arrow.circlepath")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(filteredRecent.count)")
+                Text("\(items.count)")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 4)
             .padding(.top, 4)
 
-            if filteredRecent.isEmpty {
+            if items.isEmpty {
                 Text("Chưa có thư mục gần đây")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
             } else {
-                ForEach(filteredRecent) { item in
-                    let listIdx = allVisibleItems.firstIndex(of: item)
-                    folderRow(item: item, shortcutIndex: quickIndexMap[item.id], listIndex: listIdx)
+                ForEach(items) { item in
+                    folderRow(
+                        item: item,
+                        shortcutIndex: shortcutByID[item.id],
+                        listIndex: indexByID[item.id]
+                    )
                 }
             }
         }
@@ -819,7 +860,13 @@ struct FloatingPanelView: View {
                 .fill(isHovered ? Color.accentColor.opacity(0.16) : Color.clear)
         )
         .onHover { hovering in
-            panelController.hoveredID = hovering ? file.id : (panelController.hoveredID == file.id ? nil : panelController.hoveredID)
+            if hovering {
+                if panelController.hoveredID != file.id {
+                    panelController.hoveredID = file.id
+                }
+            } else if panelController.hoveredID == file.id {
+                panelController.hoveredID = nil
+            }
         }
         .help("📁 \(file.parentPath)\nNgày sửa: \(file.formattedDate)\nDung lượng: \(file.formattedSize)\nBấm để chuyển Save dialog tới thư mục chứa tệp này")
     }
@@ -829,7 +876,7 @@ struct FloatingPanelView: View {
         let isSelected = (listIndex != nil && panelController.selectedIndex == listIndex)
         let isPinned = folderManager.isPinned(item.path)
         let isCompact = panelController.displayDensity == .compact
-        let exists = item.existsOnDisk
+        let exists = item.existsCached
 
         return HStack(spacing: 8) {
             Button {
@@ -932,17 +979,20 @@ struct FloatingPanelView: View {
                 }
             }
         )
+        .id(item.id)
         .onHover { hovering in
             if hovering {
-                panelController.hoveredID = item.id
-                if let listIndex {
+                if panelController.hoveredID != item.id {
+                    panelController.hoveredID = item.id
+                }
+                if let listIndex, panelController.selectedIndex != listIndex {
                     panelController.selectedIndex = listIndex
                 }
             } else if panelController.hoveredID == item.id {
                 panelController.hoveredID = nil
             }
         }
-        .help(item.formattedTooltip)
+        .help(isHovered ? item.formattedTooltip : item.path)
     }
 
     private var footerSection: some View {

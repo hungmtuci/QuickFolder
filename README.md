@@ -12,7 +12,7 @@
   <img src="docs/images/settings-dashboard.png" alt="Bảng điều khiển Cài đặt & Thử nghiệm QuickFolder" width="760" />
 </p>
 
-## ✨ Tính năng nổi bật (v1.3.7)
+## ✨ Tính năng nổi bật (v1.3.8)
 
 - **10 Cải tiến Toàn diện & Nâng cao Trải nghiệm Người dùng**:
   1. **Tìm kiếm tiếng Việt không dấu (Diacritic-Insensitive Search)**: Gõ `baocao`, `tochuc`, `tailieu`, `nghiencuu` tìm chính xác `Báo Cáo`, `02. ToChuc`, `Tài Liệu`, `Nghiên Cứu`.
@@ -56,8 +56,8 @@
 ## 📥 Tải về & Cài đặt nhanh (macOS 14.0+ Universal: Apple Silicon & Intel)
 
 1. Tải bộ cài mới nhất tại trang **[Releases](https://github.com/hungmtuci/QuickFolder/releases/latest)**:
-   - **`QuickFolder-Installer-v1.3.7.dmg`** *(Khuyên dùng)*
-   - Hoặc **`QuickFolder-v1.3.7-macOS.zip`**
+   - **`QuickFolder-Installer-v1.3.8.dmg`** *(Khuyên dùng)*
+   - Hoặc **`QuickFolder-v1.3.8-macOS.zip`**
 2. Mở file `.dmg`:
    - Kéo `QuickFolder.app` thả vào thư mục **`Applications`**, **HOẶC** nhấp chuột phải vào `Cai_Dat_QuickFolder.command` -> chọn **Open** để tự động cài đặt và gỡ cờ cách ly Gatekeeper.
 3. Nếu macOS báo ứng dụng chưa công chứng Apple Developer ID khi mở lần đầu trên máy mới, chạy lệnh sau trong Terminal:

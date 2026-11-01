@@ -43,15 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if didJustUpdate {
             UserDefaults.standard.removeObject(forKey: "QF_OpenDashboardAfterUpdate")
         }
-        let isStartupLaunch = CommandLine.arguments.contains("--startup")
         let shouldShowDashboard: Bool
         if didJustUpdate || CommandLine.arguments.contains("--open-dashboard") {
             shouldShowDashboard = true
-        } else if isStartupLaunch {
-            shouldShowDashboard = LaunchAtLoginManager.shared.openDashboardOnStartup
         } else {
-            // Manual launch by user (from Finder, Applications, Dock, or Spotlight)
-            shouldShowDashboard = true
+            shouldShowDashboard = LaunchAtLoginManager.shared.shouldOpenDashboardOnStartup()
         }
 
         if shouldShowDashboard {
@@ -78,10 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             FolderNavigator.shared.jumpToFrontmostFinderWindow()
         }
         hotKeys.onSelectQuickIndex = { index in
-            guard FloatingPanelController.shared.isPanelVisible else { return }
-            let all = FolderManager.shared.allQuickAccessFolders()
-            if index >= 0 && index < all.count {
-                FolderNavigator.shared.selectFolder(all[index])
+            let controller = FloatingPanelController.shared
+            guard controller.isPanelVisible else { return }
+            let visible = controller.currentVisibleItems()
+            if index >= 0 && index < visible.count {
+                FolderNavigator.shared.selectFolder(visible[index])
             }
         }
         hotKeys.registerHotKeys()
