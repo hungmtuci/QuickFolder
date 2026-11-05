@@ -6,8 +6,8 @@ cd "$PROJECT_DIR"
 
 APP_NAME="QuickFolder"
 BUNDLE_ID="com.hunglx.QuickFolder"
-VERSION="1.3.8"
-BUILD_NUM="12"
+VERSION="1.3.9"
+BUILD_NUM="13"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -135,6 +135,8 @@ cat > "$STAGE_APP/Contents/Info.plist" <<EOF
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSQuitAlwaysKeepsWindows</key>
+    <false/>
     <key>NSAppleEventsUsageDescription</key>
     <string>QuickFolder cần quyền đọc danh sách các cửa sổ đang mở trong Finder để giúp bạn chọn nhanh thư mục khi lưu hoặc mở file.</string>
 </dict>

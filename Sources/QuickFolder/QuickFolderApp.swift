@@ -2,21 +2,18 @@ import SwiftUI
 import AppKit
 
 @main
-struct QuickFolderApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-    var body: some Scene {
-        Settings {
-            EmptyView()
-        }
-    }
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static weak var shared: AppDelegate?
     private var statusItem: NSStatusItem!
     private var dashboardWindow: NSWindow?
+
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.run()
+    }
 
     var isDashboardVisible: Bool {
         dashboardWindow?.isVisible ?? false
@@ -37,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         setupStatusBarMenu()
         setupHotKeys()
+
+        // Clean up any legacy SwiftUI settings window persistence from previous versions
+        UserDefaults.standard.removeObject(forKey: "NSWindow Frame com_apple_SwiftUI_Settings_window")
 
         // Auto-open the dashboard after a GitHub self-update, explicit CLI flag, first launch, or manual user launch
         let didJustUpdate = UserDefaults.standard.bool(forKey: "QF_OpenDashboardAfterUpdate")
@@ -336,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             win.title = "QuickFolder — Cài đặt & Thử nghiệm"
             win.center()
             win.isReleasedWhenClosed = false
+            win.isRestorable = false
             win.contentView = NSHostingView(rootView: SettingsAndTestView())
             self.dashboardWindow = win
         }
