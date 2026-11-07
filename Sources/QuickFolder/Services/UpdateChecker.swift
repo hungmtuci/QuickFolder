@@ -25,7 +25,7 @@ final class UpdateChecker: ObservableObject {
     private var progressBar: NSProgressIndicator?
 
     var currentVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.3.9"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.4.0"
     }
 
     private init() {}
@@ -416,7 +416,9 @@ final class UpdateChecker: ObservableObject {
             .appendingPathComponent("MacOS", isDirectory: true)
             .appendingPathComponent("QuickFolder")
 
-        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+        let extractedBundleID = Bundle(url: appURL)?.bundleIdentifier
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path),
+              extractedBundleID == "com.hunglx.QuickFolder" else {
             throw NSError(
                 domain: "QuickFolderUpdater",
                 code: 3,
@@ -476,8 +478,12 @@ final class UpdateChecker: ObservableObject {
                     sleep 0.1
                     i=$((i + 1))
                 done
-                /usr/bin/osascript -e "do shell script \\"rm -rf '$DST_APP' && /usr/bin/ditto --noextattr '$SRC_APP' '$DST_APP' && /usr/bin/xattr -cr '$DST_APP'\\" with administrator privileges" >/dev/null 2>&1
-                /usr/bin/open "$DST_APP"
+                if SRC_APP="$SRC_APP" DST_APP="$DST_APP" /usr/bin/osascript \
+                    -e 'set srcPath to system attribute "SRC_APP"' \
+                    -e 'set dstPath to system attribute "DST_APP"' \
+                    -e 'do shell script "/bin/rm -rf " & quoted form of dstPath & " && /usr/bin/ditto --noextattr " & quoted form of srcPath & " " & quoted form of dstPath & " && /usr/bin/xattr -cr " & quoted form of dstPath with administrator privileges' >/dev/null 2>&1; then
+                    /usr/bin/open "$DST_APP"
+                fi
                 rm -rf "$STAGE_DIR"
             ) </dev/null >/dev/null 2>&1 &
             """

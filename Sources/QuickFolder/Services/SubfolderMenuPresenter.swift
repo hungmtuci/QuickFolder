@@ -239,7 +239,12 @@ final class SubfolderMenuPresenter: NSObject, NSMenuDelegate {
         ) else {
             return false
         }
+        var inspectedCount = 0
         while let childURL = enumerator.nextObject() as? URL {
+            inspectedCount += 1
+            if inspectedCount > 60 {
+                break
+            }
             if let vals = try? childURL.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]),
                vals.isDirectory == true,
                vals.isPackage != true {

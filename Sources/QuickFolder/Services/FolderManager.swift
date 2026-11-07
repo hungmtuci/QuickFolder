@@ -45,6 +45,7 @@ final class FolderManager: ObservableObject {
     private var storedRecents: [StoredRecentFolder] = []
     private var pinnedPathSet: Set<String> = []
     private var pollTimer: Timer?
+    private var workspaceDeactivateToken: NSObjectProtocol?
     private var isRefreshingFinder = false
     private var isRefreshingSavedFiles = false
     private var lastSavedFilesRefreshTime: TimeInterval = 0
@@ -67,15 +68,17 @@ final class FolderManager: ObservableObject {
                 self?.refreshNow()
             }
         }
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didDeactivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-               app.bundleIdentifier == "com.apple.finder" {
-                Task { @MainActor in
-                    self?.refreshNow()
+        if workspaceDeactivateToken == nil {
+            workspaceDeactivateToken = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didDeactivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                   app.bundleIdentifier == "com.apple.finder" {
+                    Task { @MainActor in
+                        self?.refreshNow()
+                    }
                 }
             }
         }
@@ -647,8 +650,7 @@ final class FolderManager: ObservableObject {
             if activePath == nil {
                 var proxyRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(win, kAXProxyAttribute as CFString, &proxyRef) == .success,
-                   let proxy = proxyRef {
-                    let proxyEl = proxy as! AXUIElement
+                   let proxyEl = asAXUIElement(proxyRef) {
                     var urlRef: CFTypeRef?
                     if AXUIElementCopyAttributeValue(proxyEl, kAXURLAttribute as CFString, &urlRef) == .success {
                         if let url = urlRef as? URL, let p = (url as NSURL).filePathURL?.path, !p.isEmpty {
@@ -797,13 +799,14 @@ final class FolderManager: ObservableObject {
         var sizeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
               AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let posVal = posRef, let sizeVal = sizeRef else {
+              let posVal = asAXValue(posRef),
+              let sizeVal = asAXValue(sizeRef) else {
             return nil
         }
         var pt = CGPoint.zero
         var sz = CGSize.zero
-        guard AXValueGetValue(posVal as! AXValue, .cgPoint, &pt),
-              AXValueGetValue(sizeVal as! AXValue, .cgSize, &sz),
+        guard AXValueGetValue(posVal, .cgPoint, &pt),
+              AXValueGetValue(sizeVal, .cgSize, &sz),
               sz.width >= 150, sz.height >= 120 else {
             return nil
         }

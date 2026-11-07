@@ -9,15 +9,14 @@ private final class FinderHighlightPanel: NSPanel {
     var onPanelClicked: (() -> Void)?
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseUp {
+        if event.type == .leftMouseDown {
             onPanelClicked?()
             return
         }
+        if event.type == .leftMouseUp {
+            return
+        }
         super.sendEvent(event)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onPanelClicked?()
     }
 }
 
@@ -276,7 +275,7 @@ final class FinderClickOverlayController: ObservableObject {
                 }) {
                     return exact
                 }
-                return finderWindows.first
+                return nil
             }
         }
         return nil

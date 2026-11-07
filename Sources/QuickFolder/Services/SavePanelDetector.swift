@@ -43,6 +43,7 @@ final class SavePanelDetector: ObservableObject {
     private var isPollingInFlight = false
     private var trailingPollTask: Task<Void, Never>?
     private var lastAutoJumpedSessionKey: String?
+    private var workspaceActivateToken: NSObjectProtocol?
 
     private init() {
         if let savedExcluded = UserDefaults.standard.stringArray(forKey: excludedAppsKey) {
@@ -87,14 +88,16 @@ final class SavePanelDetector: ObservableObject {
     func startMonitoring() {
         attachAXObserverToFrontmostApp()
 
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.attachAXObserverToFrontmostApp()
-                self?.pollNow()
+        if workspaceActivateToken == nil {
+            workspaceActivateToken = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.attachAXObserverToFrontmostApp()
+                    self?.pollNow()
+                }
             }
         }
 
@@ -621,15 +624,15 @@ final class SavePanelDetector: ObservableObject {
         var sizeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
               AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let posVal = posRef,
-              let sizeVal = sizeRef else {
+              let posVal = asAXValue(posRef),
+              let sizeVal = asAXValue(sizeRef) else {
             return nil
         }
 
         var cgPoint = CGPoint.zero
         var cgSize = CGSize.zero
-        guard AXValueGetValue(posVal as! AXValue, .cgPoint, &cgPoint),
-              AXValueGetValue(sizeVal as! AXValue, .cgSize, &cgSize),
+        guard AXValueGetValue(posVal, .cgPoint, &cgPoint),
+              AXValueGetValue(sizeVal, .cgSize, &cgSize),
               cgSize.width >= 260, cgSize.height >= 120 else {
             return nil
         }
@@ -647,11 +650,10 @@ final class SavePanelDetector: ObservableObject {
 
     nonisolated private static func copyAXElement(_ element: AXUIElement, attribute: String) -> AXUIElement? {
         var ref: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &ref) == .success,
-              let val = ref else {
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &ref) == .success else {
             return nil
         }
-        return (val as! AXUIElement)
+        return asAXUIElement(ref)
     }
 
     nonisolated private static func copyAXElements(_ element: AXUIElement, attribute: String) -> [AXUIElement]? {

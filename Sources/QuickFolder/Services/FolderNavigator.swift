@@ -60,6 +60,7 @@ final class FolderNavigator: ObservableObject {
 
     private func navigateExternalSavePanel(targetPID: pid_t, folderPath: String, folderName: String) {
         let detector = SavePanelDetector.shared
+        guard !detector.isNavigatingFolder else { return }
         detector.isNavigatingFolder = true
         showBanner("✓ Đang chuyển tới “\(folderName)”...")
 
@@ -67,10 +68,14 @@ final class FolderNavigator: ObservableObject {
         FloatingPanelController.shared.resignKeyForNavigation()
 
         Task { @MainActor in
+            defer {
+                detector.isNavigatingFolder = false
+                detector.pollNow()
+            }
+
             guard AXIsProcessTrusted() else {
                 SavePanelDetector.shared.checkAccessibilityPermission(prompt: true)
                 self.showBanner("⚠️ Hãy bật quyền Accessibility cho QuickFolder")
-                detector.isNavigatingFolder = false
                 return
             }
 
@@ -96,8 +101,6 @@ final class FolderNavigator: ObservableObject {
             if sidebarHandled {
                 try? await Task.sleep(nanoseconds: 80_000_000)
                 self.showBanner("✓ Đã chuyển tới “\(folderName)”")
-                detector.isNavigatingFolder = false
-                detector.pollNow()
                 return
             }
 
@@ -142,8 +145,6 @@ final class FolderNavigator: ObservableObject {
             guard isGoToOpen else {
                 Self.restorePasteboard(savedItems)
                 self.showBanner("⚠️ Không thể mở Go To Folder trên ứng dụng này")
-                detector.isNavigatingFolder = false
-                detector.pollNow()
                 return
             }
 
@@ -179,9 +180,6 @@ final class FolderNavigator: ObservableObject {
                     Self.scrollColumnViewToRightmost(pid: targetPID)
                 }.value
             }
-
-            detector.isNavigatingFolder = false
-            detector.pollNow()
         }
     }
 
@@ -274,13 +272,15 @@ final class FolderNavigator: ObservableObject {
         var posRef: CFTypeRef?
         var sizeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success else {
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let posVal = asAXValue(posRef),
+              let sizeVal = asAXValue(sizeRef) else {
             return nil
         }
         var pos = CGPoint.zero
         var size = CGSize.zero
-        guard AXValueGetValue(posRef as! AXValue, .cgPoint, &pos),
-              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else {
+        guard AXValueGetValue(posVal, .cgPoint, &pos),
+              AXValueGetValue(sizeVal, .cgSize, &size) else {
             return nil
         }
         return NSRect(x: pos.x, y: primaryScreenHeight - pos.y - size.height, width: size.width, height: size.height)
@@ -487,13 +487,15 @@ final class FolderNavigator: ObservableObject {
         var posRef: CFTypeRef?
         var sizeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success else {
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let posVal = asAXValue(posRef),
+              let sizeVal = asAXValue(sizeRef) else {
             return nil
         }
         var pos = CGPoint.zero
         var size = CGSize.zero
-        guard AXValueGetValue(posRef as! AXValue, .cgPoint, &pos),
-              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size),
+        guard AXValueGetValue(posVal, .cgPoint, &pos),
+              AXValueGetValue(sizeVal, .cgSize, &size),
               size.width > 0, size.height > 0 else {
             return nil
         }
@@ -502,11 +504,15 @@ final class FolderNavigator: ObservableObject {
 
     nonisolated private static func clickAtPoint(_ center: CGPoint) {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        let savedMouse = CGEvent(source: nil)?.location
         let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: center, mouseButton: .left)
         let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: center, mouseButton: .left)
         down?.post(tap: .cghidEventTap)
         usleep(25_000)
         up?.post(tap: .cghidEventTap)
+        if let savedMouse {
+            CGWarpMouseCursorPosition(savedMouse)
+        }
     }
 
     nonisolated private static func findSaveDialogRoots(pid: pid_t) -> [AXUIElement] {

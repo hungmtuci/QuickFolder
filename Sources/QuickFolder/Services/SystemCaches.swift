@@ -1,5 +1,16 @@
 import Foundation
 import AppKit
+import ApplicationServices
+
+nonisolated func asAXValue(_ ref: CFTypeRef?) -> AXValue? {
+    guard let ref, CFGetTypeID(ref) == AXValueGetTypeID() else { return nil }
+    return unsafeBitCast(ref, to: AXValue.self)
+}
+
+nonisolated func asAXUIElement(_ ref: CFTypeRef?) -> AXUIElement? {
+    guard let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() else { return nil }
+    return unsafeBitCast(ref, to: AXUIElement.self)
+}
 
 enum ScreenGeometry {
     /// Height of the primary display (origin 0,0) used by macOS Quartz/Accessibility top-left coordinates.

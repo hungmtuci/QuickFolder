@@ -6,8 +6,8 @@ cd "$PROJECT_DIR"
 
 APP_NAME="QuickFolder"
 BUNDLE_ID="com.hunglx.QuickFolder"
-VERSION="1.3.9"
-BUILD_NUM="13"
+VERSION="1.4.0"
+BUILD_NUM="14"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -23,8 +23,9 @@ else
 fi
 
 echo "==> [2/5] Đang tạo biểu tượng ứng dụng (AppIcon.icns)..."
-ICONSET_DIR="$PROJECT_DIR/.build/AppIcon.iconset"
-rm -rf "$ICONSET_DIR"
+TMP_STAGE="$(mktemp -d /tmp/quickfolder_pkg.XXXXXX)"
+trap 'rm -rf "$TMP_STAGE"' EXIT
+ICONSET_DIR="$TMP_STAGE/AppIcon.iconset"
 mkdir -p "$ICONSET_DIR"
 
 swift - "$ICONSET_DIR" << 'SWIFT_ICON'
@@ -97,14 +98,12 @@ for (px, name) in sizes {
 SWIFT_ICON
 
 echo "==> [3/5] Đang đóng gói $APP_NAME.app..."
-TMP_STAGE="$(mktemp -d /tmp/quickfolder_pkg.XXXXXX)"
-trap 'rm -rf "$TMP_STAGE"' EXIT
 STAGE_APP="$TMP_STAGE/$APP_NAME.app"
 mkdir -p "$STAGE_APP/Contents/MacOS" "$STAGE_APP/Contents/Resources"
 
-ditto --noextattr "$BIN_PATH" "$STAGE_APP/Contents/MacOS/$APP_NAME"
+ditto --norsrc --noextattr "$BIN_PATH" "$STAGE_APP/Contents/MacOS/$APP_NAME"
 chmod +x "$STAGE_APP/Contents/MacOS/$APP_NAME"
-iconutil -c icns "$ICONSET_DIR" -o "$STAGE_APP/Contents/Resources/AppIcon.icns" || true
+iconutil -c icns "$ICONSET_DIR" -o "$STAGE_APP/Contents/Resources/AppIcon.icns"
 
 cat > "$STAGE_APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -170,9 +169,11 @@ echo "    -> Sử dụng danh tính ký số: $SIGN_IDENTITY"
 if ! codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign "$SIGN_IDENTITY" "$STAGE_APP" 2>/dev/null; then
     codesign --force --deep --entitlements "$PROJECT_DIR/entitlements.plist" --sign - "$STAGE_APP"
 fi
+codesign --verify --deep --strict "$STAGE_APP"
 
 rm -rf "$APP_BUNDLE"
-ditto --noextattr "$STAGE_APP" "$APP_BUNDLE"
+ditto --norsrc --noextattr "$STAGE_APP" "$APP_BUNDLE"
+xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 
 echo "==> [5/5] Đang tạo bộ cài đặt .DMG và .ZIP tại thư mục dist/..."
 rm -rf "$DIST_DIR"
@@ -181,7 +182,7 @@ mkdir -p "$DIST_DIR"
 DMG_STAGING="$TMP_STAGE/dmg_staging"
 mkdir -p "$DMG_STAGING"
 
-ditto --noextattr "$STAGE_APP" "$DMG_STAGING/$APP_NAME.app"
+ditto --norsrc --noextattr "$STAGE_APP" "$DMG_STAGING/$APP_NAME.app"
 ln -s /Applications "$DMG_STAGING/Applications"
 
 cat > "$DMG_STAGING/Cai_Dat_QuickFolder.command" << 'INSTALLER_EOF'
@@ -195,7 +196,7 @@ echo "===================================================="
 echo "  Đang cài đặt QuickFolder vào /Applications..."
 echo "===================================================="
 
-pkill -f QuickFolder 2>/dev/null || true
+pkill -x QuickFolder 2>/dev/null || true
 rm -rf "$APP_DST"
 cp -R "$APP_SRC" "$APP_DST"
 
@@ -219,11 +220,19 @@ hdiutil create -volname "${APP_NAME} Installer" \
     "$DMG_PATH" >/dev/null
 
 ZIP_PATH="$DIST_DIR/${APP_NAME}-v${VERSION}-macOS.zip"
-ditto -c -k --noextattr --keepParent "$STAGE_APP" "$ZIP_PATH"
+ditto -c -k --norsrc --noextattr --keepParent "$STAGE_APP" "$ZIP_PATH"
 
 rm -rf "$DMG_STAGING"
 
+ROOT_WORKSPACE_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+if [ "$ROOT_WORKSPACE_DIR" != "$PROJECT_DIR" ] && [ -w "$ROOT_WORKSPACE_DIR" ]; then
+    rm -rf "$ROOT_WORKSPACE_DIR/$APP_NAME.app"
+    ditto --norsrc --noextattr "$STAGE_APP" "$ROOT_WORKSPACE_DIR/$APP_NAME.app"
+    xattr -cr "$ROOT_WORKSPACE_DIR/$APP_NAME.app" 2>/dev/null || true
+fi
+
 echo "==> Hoàn tất!"
 echo "    - Ứng dụng: $APP_BUNDLE"
+echo "    - Đồng bộ Workspace: $ROOT_WORKSPACE_DIR/$APP_NAME.app"
 echo "    - Bộ cài DMG: $DMG_PATH"
 echo "    - Bản nén ZIP: $ZIP_PATH"
