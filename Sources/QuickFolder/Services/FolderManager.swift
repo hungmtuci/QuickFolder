@@ -89,6 +89,7 @@ final class FolderManager: ObservableObject {
         guard !isRefreshingFinder else { return }
         isRefreshingFinder = true
         let knownPaths = storedRecents.map(\.path) + pinnedPaths
+        let appDefaultPaths = Array(perAppDefaults.values)
         let primaryScreenHeight = ScreenGeometry.primaryScreenHeight
 
         Task.detached(priority: .userInitiated) {
@@ -96,6 +97,13 @@ final class FolderManager: ObservableObject {
                 knownRecentPaths: knownPaths,
                 primaryScreenHeight: primaryScreenHeight
             )
+            // Warm existence/icon/tooltip caches off the main thread so rebuilding lists and
+            // rendering rows never blocks on disk / CloudStorage I/O.
+            var warmPaths = (knownPaths + appDefaultPaths).map { FolderItem.standardizePath($0) }
+            if case .success(let infos) = result {
+                warmPaths.append(contentsOf: infos.map { FolderItem.standardizePath($0.path) })
+            }
+            FileMetadataCache.shared.prefetch(paths: Array(Set(warmPaths)), includeTooltips: true)
             await MainActor.run {
                 self.isRefreshingFinder = false
                 switch result {

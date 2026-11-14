@@ -12,6 +12,8 @@ struct FloatingPanelView: View {
 
     var onCloseRequested: (() -> Void)?
 
+    @FocusState private var isSearchFocused: Bool
+
     @MainActor
     init(
         panelController: FloatingPanelController,
@@ -122,10 +124,8 @@ struct FloatingPanelView: View {
                         .onChange(of: panelController.selectedIndex) { _, newIdx in
                             guard let newIdx, newIdx >= 0, newIdx < visibleList.count else { return }
                             let targetID = visibleList[newIdx].id
-                            if panelController.hoveredID != targetID {
-                                withAnimation(.easeOut(duration: 0.12)) {
-                                    scrollProxy.scrollTo(targetID, anchor: .center)
-                                }
+                            withAnimation(.easeOut(duration: 0.1)) {
+                                scrollProxy.scrollTo(targetID, anchor: .center)
                             }
                         }
                     }
@@ -465,11 +465,16 @@ struct FloatingPanelView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
-            TextField("Lọc nhanh thư mục...", text: $panelController.searchText)
+            TextField("Lọc nhanh thư mục... (↑↓ Enter)", text: $panelController.searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
+                .focused($isSearchFocused)
                 .onTapGesture {
+                    // Panel is non-activating: make it key first, then focus the field so ONE click is enough
                     panelController.enableSearchFieldFocus()
+                }
+                .onChange(of: panelController.searchFocusRequest) { _, _ in
+                    DispatchQueue.main.async { isSearchFocused = true }
                 }
 
             if !panelController.searchText.isEmpty {
@@ -807,141 +812,126 @@ struct FloatingPanelView: View {
     }
 
     private func recentFileRow(file: SavedFileInfo) -> some View {
-        let isHovered = panelController.hoveredID == file.id
-        let isCompact = panelController.displayDensity == .compact
-
-        return HStack(spacing: 8) {
-            Button {
-                let parent = FolderItem(path: file.parentPath, source: .recent)
-                navigator.selectFolder(parent)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(nsImage: file.icon)
-                        .resizable()
-                        .frame(width: isCompact ? 17 : 20, height: isCompact ? 17 : 20)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(file.name)
-                            .font(.system(size: isCompact ? 11.5 : 12, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-
-                        HStack(spacing: 5) {
-                            Text(file.formattedDate)
-                            Text("•")
-                            Text(file.formattedSize)
-                        }
-                        .font(.system(size: isCompact ? 9 : 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 4)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            // Button to reveal in Finder
-            Button {
-                NSWorkspace.shared.activateFileViewerSelecting([file.url])
-            } label: {
-                Image(systemName: "magnifyingglass.circle")
-                    .font(.system(size: isCompact ? 12 : 13))
-                    .foregroundStyle(isHovered ? Color.accentColor : Color.secondary.opacity(0.8))
-            }
-            .buttonStyle(.plain)
-            .help("Xem tệp trong Finder")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, isCompact ? 3.5 : 5.5)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isHovered ? Color.accentColor.opacity(0.16) : Color.clear)
-        )
-        .onHover { hovering in
-            if hovering {
-                if panelController.hoveredID != file.id {
-                    panelController.hoveredID = file.id
-                }
-            } else if panelController.hoveredID == file.id {
-                panelController.hoveredID = nil
-            }
-        }
-        .help("📁 \(file.parentPath)\nNgày sửa: \(file.formattedDate)\nDung lượng: \(file.formattedSize)\nBấm để chuyển Save dialog tới thư mục chứa tệp này")
+        RecentFileRowView(file: file, isCompact: panelController.displayDensity == .compact)
+            .equatable()
     }
 
     private func folderRow(item: FolderItem, shortcutIndex: Int?, listIndex: Int?) -> some View {
-        let isHovered = panelController.hoveredID == item.id
-        let isSelected = (listIndex != nil && panelController.selectedIndex == listIndex)
-        let isPinned = folderManager.isPinned(item.path)
-        let isCompact = panelController.displayDensity == .compact
-        let exists = item.existsCached
+        FolderRowView(
+            item: item,
+            shortcutIndex: shortcutIndex,
+            isSelected: listIndex != nil && panelController.selectedIndex == listIndex,
+            isPinned: folderManager.isPinned(item.path),
+            isCompact: panelController.displayDensity == .compact
+        )
+        .equatable()
+        .id(item.id)
+    }
 
-        return HStack(spacing: 8) {
-            Button {
-                navigator.selectFolder(item)
-            } label: {
-                HStack(spacing: 8) {
-                    ZStack(alignment: .bottomTrailing) {
-                        Image(nsImage: item.icon)
-                            .resizable()
-                            .frame(width: isCompact ? 17 : 20, height: isCompact ? 17 : 20)
-                            .opacity(exists ? 1.0 : 0.45)
+    private var footerSection: some View {
+        HStack {
+            Text("⌥1–9 Chọn nhanh")
+            Spacer()
+            Text("\(hotKeyManager.finderJumpPreset.compactLabel) Finder đầu")
+            Spacer()
+            Text("▸ Thư mục con")
+        }
+        .font(.system(size: 9.5, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+}
 
-                        if case .openFinderWindow(let idx) = item.source, idx == 1 {
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 7, height: 7)
-                                .overlay(Circle().stroke(Color.black.opacity(0.3), lineWidth: 0.5))
-                        }
+// MARK: - Lightweight Row Views
+
+/// Per-row hover state (a tiny ObservableObject so only the hovered row re-renders).
+final class RowHoverState: ObservableObject {
+    @Published var isHovered = false
+}
+//
+// Rows own their hover state locally, so moving the mouse across the list re-renders only the two
+// affected rows instead of the whole panel (filtering, banners, every row). They never touch the disk.
+
+struct FolderRowView: View, Equatable {
+    let item: FolderItem
+    let shortcutIndex: Int?
+    let isSelected: Bool
+    let isPinned: Bool
+    let isCompact: Bool
+
+    @StateObject private var hover = RowHoverState()
+    private var isHovered: Bool { hover.isHovered }
+
+    static func == (lhs: FolderRowView, rhs: FolderRowView) -> Bool {
+        lhs.item == rhs.item &&
+        lhs.shortcutIndex == rhs.shortcutIndex &&
+        lhs.isSelected == rhs.isSelected &&
+        lhs.isPinned == rhs.isPinned &&
+        lhs.isCompact == rhs.isCompact
+    }
+
+    var body: some View {
+        let exists = item.existsForDisplay
+        let highlighted = isHovered || isSelected
+
+        HStack(spacing: 8) {
+            Image(nsImage: item.icon)
+                .resizable()
+                .frame(width: isCompact ? 17 : 20, height: isCompact ? 17 : 20)
+                .opacity(exists ? 1.0 : 0.45)
+                .overlay(alignment: .bottomTrailing) {
+                    if case .openFinderWindow(let idx) = item.source, idx == 1 {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 7, height: 7)
+                            .overlay(Circle().stroke(Color.black.opacity(0.3), lineWidth: 0.5))
                     }
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 4) {
-                            Text(item.name)
-                                .font(.system(size: isCompact ? 11.5 : 12, weight: isSelected ? .bold : .medium))
-                                .foregroundStyle(exists ? Color.primary : Color.secondary)
-                                .lineLimit(1)
-
-                            if !exists {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.orange)
-                            }
-
-                            if isPinned {
-                                Image(systemName: "pin.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-
-                        Text(item.displayPath)
-                            .font(.system(size: isCompact ? 9 : 10))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-
-                    Spacer(minLength: 4)
                 }
-                .contentShape(Rectangle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(item.name)
+                        .font(.system(size: isCompact ? 11.5 : 12, weight: isSelected ? .bold : .medium))
+                        .foregroundStyle(exists ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+
+                    if !exists {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.orange)
+                    }
+
+                    if isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Text(item.displayPath)
+                    .font(.system(size: isCompact ? 9 : 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 4)
+
+            // Pin button keeps its slot (hidden via opacity) so the row layout never jumps on hover
+            Button {
+                FolderManager.shared.togglePin(item.path)
+            } label: {
+                Image(systemName: isPinned ? "pin.slash.fill" : "pin")
+                    .font(.system(size: 10))
+                    .foregroundStyle(isPinned ? .orange : .secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
-            if isHovered || isPinned {
-                Button {
-                    folderManager.togglePin(item.path)
-                } label: {
-                    Image(systemName: isPinned ? "pin.slash.fill" : "pin")
-                        .font(.system(size: 10))
-                        .foregroundStyle(isPinned ? .orange : .secondary)
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.plain)
-                .help(isPinned ? "Bỏ ghim thư mục" : "Ghim thư mục lên đầu")
-            }
+            .opacity(isHovered || isPinned ? 1 : 0)
+            .allowsHitTesting(isHovered || isPinned)
+            .help(isPinned ? "Bỏ ghim thư mục" : "Ghim thư mục lên đầu")
 
             if let shortcutIndex {
                 Text("⌥\(shortcutIndex)")
@@ -959,8 +949,9 @@ struct FloatingPanelView: View {
             } label: {
                 Image(systemName: "chevron.right.circle")
                     .font(.system(size: isCompact ? 11.5 : 12.5, weight: .medium))
-                    .foregroundStyle((isHovered || isSelected) ? Color.accentColor : Color.secondary.opacity(0.75))
-                    .frame(width: 20, height: 20)
+                    .foregroundStyle(highlighted ? Color.accentColor : Color.secondary.opacity(0.75))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Duyệt cây thư mục con / Tạo thư mục mới / Đặt mặc định cho app")
@@ -971,44 +962,99 @@ struct FloatingPanelView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.14) : Color.clear))
         )
-        .overlay(
-            Group {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
-                }
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
             }
-        )
-        .id(item.id)
+        }
+        // The whole row (not just the label) is the click target; inner buttons still win their own hits.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            FolderNavigator.shared.selectFolder(item)
+        }
+        .contextMenu {
+            Button("Chọn thư mục này") { FolderNavigator.shared.selectFolder(item) }
+            Button(isPinned ? "Bỏ ghim" : "Ghim lên Yêu thích") { FolderManager.shared.togglePin(item.path) }
+            Button("Mở trong Finder") {
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: item.path)
+            }
+            Button("Sao chép đường dẫn") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(item.path, forType: .string)
+            }
+        }
         .onHover { hovering in
-            if hovering {
-                if panelController.hoveredID != item.id {
-                    panelController.hoveredID = item.id
-                }
-                if let listIndex, panelController.selectedIndex != listIndex {
-                    panelController.selectedIndex = listIndex
-                }
-            } else if panelController.hoveredID == item.id {
-                panelController.hoveredID = nil
-            }
+            if hover.isHovered != hovering { hover.isHovered = hovering }
         }
-        .help(isHovered ? item.formattedTooltip : item.path)
-    }
-
-    private var footerSection: some View {
-        HStack {
-            Text("⌥1–9 Chọn nhanh")
-            Spacer()
-            Text("\(hotKeyManager.finderJumpPreset.compactLabel) Finder đầu")
-            Spacer()
-            Text("▸ Thư mục con")
-        }
-        .font(.system(size: 9.5, weight: .medium))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .help(item.tooltipForDisplay)
     }
 }
+
+struct RecentFileRowView: View, Equatable {
+    let file: SavedFileInfo
+    let isCompact: Bool
+
+    @StateObject private var hover = RowHoverState()
+    private var isHovered: Bool { hover.isHovered }
+
+    static func == (lhs: RecentFileRowView, rhs: RecentFileRowView) -> Bool {
+        lhs.file == rhs.file && lhs.isCompact == rhs.isCompact
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(nsImage: file.icon)
+                .resizable()
+                .frame(width: isCompact ? 17 : 20, height: isCompact ? 17 : 20)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file.name)
+                    .font(.system(size: isCompact ? 11.5 : 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                HStack(spacing: 5) {
+                    Text(file.formattedDate)
+                    Text("•")
+                    Text(file.formattedSize)
+                }
+                .font(.system(size: isCompact ? 9 : 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([file.url])
+            } label: {
+                Image(systemName: "magnifyingglass.circle")
+                    .font(.system(size: isCompact ? 12 : 13))
+                    .foregroundStyle(isHovered ? Color.accentColor : Color.secondary.opacity(0.8))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Xem tệp trong Finder")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, isCompact ? 3.5 : 5.5)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isHovered ? Color.accentColor.opacity(0.16) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            FolderNavigator.shared.selectFolder(FolderItem(path: file.parentPath, source: .recent))
+        }
+        .onHover { hovering in
+            if hover.isHovered != hovering { hover.isHovered = hovering }
+        }
+        .help("📁 \(file.parentPath)\nNgày sửa: \(file.formattedDate)\nDung lượng: \(file.formattedSize)\nBấm để chuyển Save dialog tới thư mục chứa tệp này")
+    }
+}
+
 
 struct VisualEffectBlur: NSViewRepresentable {
     var material: NSVisualEffectView.Material

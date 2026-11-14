@@ -45,8 +45,16 @@ final class FileMetadataCache: @unchecked Sendable {
     private var existenceCache: [String: ExistenceEntry] = [:]
     private var tooltipCache: [String: TooltipEntry] = [:]
 
-    private let existenceTTL: TimeInterval = 4.0
-    private let tooltipTTL: TimeInterval = 12.0
+    /// Background warm-up (every 3s poll) keeps these fresh, so main-thread lookups never touch the disk.
+    private let existenceTTL: TimeInterval = 10.0
+    private let tooltipTTL: TimeInterval = 60.0
+
+    /// Generic folder icon shared by subfolder menus (avoids per-path icon I/O on cloud volumes).
+    let genericFolderIcon16: NSImage = {
+        let img = NSWorkspace.shared.icon(for: .folder)
+        img.size = NSSize(width: 16, height: 16)
+        return img
+    }()
 
     private let mediumDateTimeFormatter: DateFormatter = {
         let df = DateFormatter()
@@ -101,6 +109,33 @@ final class FileMetadataCache: @unchecked Sendable {
         existenceCache[path] = ExistenceEntry(exists: exists, timestamp: now)
         lock.unlock()
         return exists
+    }
+
+    /// Non-blocking lookup for SwiftUI rows: returns the cached value, or `true` (optimistic) when unknown.
+    /// Never performs filesystem I/O, so scrolling/hovering stays at 60fps even for slow CloudStorage paths.
+    func directoryExistsNonBlocking(_ path: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return existenceCache[path]?.exists ?? true
+    }
+
+    /// Non-blocking tooltip lookup; returns nil if the tooltip hasn't been computed yet.
+    func cachedFolderTooltip(path: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tooltipCache[path]?.text
+    }
+
+    /// Warms existence / tooltip / icon caches for `paths`. Call from a background thread only.
+    func prefetch(paths: [String], includeTooltips: Bool) {
+        for path in paths {
+            _ = directoryExistsCached(path)
+            _ = icon(forPath: path, size: 20)
+            if includeTooltips {
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                _ = formattedFolderTooltip(name: name, path: path)
+            }
+        }
     }
 
     func invalidateDirectory(_ path: String) {

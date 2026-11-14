@@ -86,7 +86,8 @@ final class FloatingPanelController: ObservableObject {
             }
         }
     }
-    @Published var hoveredID: String?
+    /// Bumped whenever the search field should receive keyboard focus (observed by the view).
+    @Published var searchFocusRequest: Int = 0
     @Published var selectedIndex: Int? = nil
     @Published var isDropTargeted: Bool = false
     @Published var selectedTab: SidebarTab = .all {
@@ -243,6 +244,7 @@ final class FloatingPanelController: ObservableObject {
         guard let panel = panel else { return }
         panel.allowKeyFocus = true
         panel.makeKey()
+        searchFocusRequest &+= 1
     }
 
     func resignKeyForNavigation() {

@@ -56,6 +56,16 @@ struct FolderItem: Identifiable, Hashable {
         FileMetadataCache.shared.directoryExistsCached(path)
     }
 
+    /// Non-blocking existence flag for list rows (never touches the disk; optimistic when unknown).
+    var existsForDisplay: Bool {
+        FileMetadataCache.shared.directoryExistsNonBlocking(path)
+    }
+
+    /// Tooltip text if already computed in the background, otherwise just the full path.
+    var tooltipForDisplay: String {
+        FileMetadataCache.shared.cachedFolderTooltip(path: path) ?? "📁 \(name)\nĐường dẫn: \(path)"
+    }
+
     /// Live check performed right before navigating to guarantee directory validity.
     var existsOnDisk: Bool {
         var isDir: ObjCBool = false

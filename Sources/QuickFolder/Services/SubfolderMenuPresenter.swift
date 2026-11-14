@@ -95,34 +95,40 @@ final class SubfolderMenuPresenter: NSObject, NSMenuDelegate {
 
         subMenu.addItem(.separator())
 
-        // 4. Lazy load immediate child directories
-        let childDirs = Self.listImmediateSubfolders(at: folderPath)
+        // 4. Lazy load immediate child directories (cached + time-boxed so the menu opens instantly)
+        let childDirs = SubfolderIndex.shared.children(of: folderPath)
         if childDirs.isEmpty {
             let emptyItem = NSMenuItem(title: "(Không có thư mục con)", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
             subMenu.addItem(emptyItem)
         } else {
-            for childURL in childDirs.prefix(60) {
-                let childPath = childURL.path
-                let childName = childURL.lastPathComponent
+            let folderIcon = FileMetadataCache.shared.genericFolderIcon16
+            let limit = 300
+            for child in childDirs.prefix(limit) {
                 let item = NSMenuItem(
-                    title: childName,
+                    title: child.name,
                     action: #selector(selectFolderAction(_:)),
                     keyEquivalent: ""
                 )
-                item.image = FileMetadataCache.shared.icon(forPath: childPath, size: 16)
-                item.representedObject = childPath
+                item.image = folderIcon
+                item.representedObject = child.path
                 item.target = self
 
-                // Attach nested lazy submenu if this child directory itself has subdirectories
-                if Self.hasAnySubfolderFast(at: childPath) {
-                    let nested = SubfolderNSMenu(title: childName, folderPath: childPath)
+                // Attach nested lazy submenu unless we already know the child has no subfolders.
+                // (Unknown = still being probed in the background → keep it browsable.)
+                if child.hasSubfolders != false {
+                    let nested = SubfolderNSMenu(title: child.name, folderPath: child.path)
                     nested.delegate = self
                     nested.autoenablesItems = false
                     item.submenu = nested
                 }
 
                 subMenu.addItem(item)
+            }
+            if childDirs.count > limit {
+                let more = NSMenuItem(title: "… và \(childDirs.count - limit) thư mục khác", action: nil, keyEquivalent: "")
+                more.isEnabled = false
+                subMenu.addItem(more)
             }
         }
     }
@@ -206,14 +212,95 @@ final class SubfolderMenuPresenter: NSObject, NSMenuDelegate {
             errAlert.runModal()
         }
     }
+}
 
-    // MARK: - Filesystem Helpers
+// MARK: - Subfolder Index (background, cached, time-boxed)
 
-    nonisolated private static func listImmediateSubfolders(at path: String) -> [URL] {
+/// Lists child folders and probes whether each has subfolders, in parallel and off the main thread.
+/// `menuNeedsUpdate` waits at most `menuBudget`; anything slower (e.g. CloudStorage) finishes in the
+/// background and lands in the cache, so re-opening the same menu is instant.
+final class SubfolderIndex: @unchecked Sendable {
+    static let shared = SubfolderIndex()
+
+    struct Child: Sendable {
+        let name: String
+        let path: String
+        let hasSubfolders: Bool?
+    }
+
+    private struct Entry {
+        let children: [Child]
+        let timestamp: TimeInterval
+    }
+
+    private let lock = NSLock()
+    private var cache: [String: Entry] = [:]
+    private var probes: [String: Bool] = [:]
+    private let ttl: TimeInterval = 30
+    private let menuBudget: TimeInterval = 0.25
+    private let queue = DispatchQueue(label: "QuickFolder.SubfolderIndex", qos: .userInitiated, attributes: .concurrent)
+
+    private init() {}
+
+    func children(of path: String) -> [Child] {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        if let entry = cache[path], now - entry.timestamp < ttl {
+            let resolved = entry.children.map { c in
+                Child(name: c.name, path: c.path, hasSubfolders: c.hasSubfolders ?? probes[c.path])
+            }
+            lock.unlock()
+            return resolved
+        }
+        lock.unlock()
+
+        // 1. List immediate children (bounded wait so a slow volume never freezes the menu)
+        let listSem = DispatchSemaphore(value: 0)
+        var listed: [URL]?
+        queue.async {
+            let urls = Self.listImmediateSubfolders(at: path)
+            self.lock.lock(); listed = urls; self.lock.unlock()
+            listSem.signal()
+        }
+        if listSem.wait(timeout: .now() + 1.5) == .timedOut {
+            return []
+        }
+        lock.lock(); let urls = listed ?? []; lock.unlock()
+
+        // 2. Probe each child for subfolders in parallel, within the time budget
+        let group = DispatchGroup()
+        for url in urls.prefix(300) {
+            let childPath = url.path
+            lock.lock(); let known = probes[childPath] != nil; lock.unlock()
+            if known { continue }
+            group.enter()
+            queue.async {
+                let has = Self.hasAnySubfolderFast(at: childPath)
+                self.lock.lock(); self.probes[childPath] = has; self.lock.unlock()
+                group.leave()
+            }
+        }
+        _ = group.wait(timeout: .now() + menuBudget)
+
+        lock.lock()
+        let result = urls.map { url in
+            Child(name: url.lastPathComponent, path: url.path, hasSubfolders: probes[url.path])
+        }
+        cache[path] = Entry(
+            children: result.map { Child(name: $0.name, path: $0.path, hasSubfolders: nil) },
+            timestamp: now
+        )
+        if cache.count > 200 { cache.removeAll(keepingCapacity: true) }
+        if probes.count > 5000 { probes.removeAll(keepingCapacity: true) }
+        lock.unlock()
+        return result
+    }
+
+    private static func listImmediateSubfolders(at path: String) -> [URL] {
         let url = URL(fileURLWithPath: path, isDirectory: true)
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey, .isHiddenKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
             return []
@@ -231,7 +318,7 @@ final class SubfolderMenuPresenter: NSObject, NSMenuDelegate {
         }
     }
 
-    nonisolated private static func hasAnySubfolderFast(at path: String) -> Bool {
+    private static func hasAnySubfolderFast(at path: String) -> Bool {
         guard let enumerator = FileManager.default.enumerator(
             at: URL(fileURLWithPath: path, isDirectory: true),
             includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
@@ -242,7 +329,7 @@ final class SubfolderMenuPresenter: NSObject, NSMenuDelegate {
         var inspectedCount = 0
         while let childURL = enumerator.nextObject() as? URL {
             inspectedCount += 1
-            if inspectedCount > 60 {
+            if inspectedCount > 200 {
                 break
             }
             if let vals = try? childURL.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]),
